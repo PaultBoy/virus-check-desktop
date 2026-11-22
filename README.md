@@ -70,6 +70,18 @@ The CLI lands in `target/release/vcd.exe`.
   exclusions are invisible to us without administrator rights. The engine
   reports that caveat with every result.
 
+## Desktop app
+
+```powershell
+cargo run -p vcd-app --release
+```
+
+or run `target/release/virus-check-desktop.exe` (single file, no runtime to
+install). Drag a file or a folder onto the window, or use the buttons. The
+window never scans on the UI thread: a worker owns the engines, so the ClamAV
+daemon stays warm and the list fills as files finish. Selecting a row shows the
+hashes, per-engine facts and findings; **Copy JSON** exports that report.
+
 ## Design rule
 
 No report may claim more than was actually inspected. Every engine returns its

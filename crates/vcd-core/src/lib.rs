@@ -22,5 +22,5 @@ pub use report::{
     Coverage, Detection, DirectoryReport, EngineReport, EngineStatus, Fact, FileError, ScanReport,
     Severity, Summary,
 };
-pub use scanner::{ScanError, ScanScope, Scanner};
+pub use scanner::{ScanControl, ScanError, ScanProgress, ScanScope, Scanner};
 pub use verdict::Verdict;

@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::engines::{
     ClamAvEngine, ContentTypeEngine, DefenderEngine, Engine, PeStructureEngine, ScanTarget,
@@ -20,6 +20,23 @@ use crate::verdict::{Verdict, aggregate};
 pub enum ScanScope {
     SingleFile,
     Tree,
+}
+
+/// What a directory scan reports as it advances, so a UI can show progress and
+/// ask to stop without the core knowing anything about it.
+pub enum ScanProgress<'a> {
+    Planned { total: usize },
+    File {
+        report: &'a ScanReport,
+        done: usize,
+        total: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanControl {
+    Continue,
+    Stop,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +90,16 @@ impl Scanner {
     /// Scan every regular file under `root`, recursively. Unreadable files are
     /// listed as errors; they never turn into a clean result.
     pub fn scan_directory(&self, root: &Path) -> Result<DirectoryReport, ScanError> {
+        self.scan_directory_with(root, &mut |_| ScanControl::Continue)
+    }
+
+    /// Same, reporting each file as it finishes. Returning [`ScanControl::Stop`]
+    /// ends the walk and returns what was scanned so far.
+    pub fn scan_directory_with(
+        &self,
+        root: &Path,
+        on_progress: &mut dyn FnMut(ScanProgress<'_>) -> ScanControl,
+    ) -> Result<DirectoryReport, ScanError> {
         let started = Instant::now();
 
         if !root.is_dir() {
@@ -86,7 +113,12 @@ impl Scanner {
         })?;
         paths.sort();
 
-        let mut files = Vec::with_capacity(paths.len());
+        let total = paths.len();
+        if on_progress(ScanProgress::Planned { total }) == ScanControl::Stop {
+            return Ok(empty_report(root, started.elapsed()));
+        }
+
+        let mut files = Vec::with_capacity(total);
         let mut errors = Vec::new();
         let mut summary = Summary {
             files: 0,
@@ -109,12 +141,25 @@ impl Scanner {
                         Verdict::Inconclusive => summary.inconclusive += 1,
                         Verdict::Unknown => summary.unknown += 1,
                     }
+
+                    let done = files.len() + 1;
+                    let control = on_progress(ScanProgress::File {
+                        report: &report,
+                        done,
+                        total,
+                    });
                     files.push(report);
+
+                    if control == ScanControl::Stop {
+                        break;
+                    }
                 }
-                Err(error) => errors.push(FileError {
-                    path,
-                    error: error.to_string(),
-                }),
+                Err(error) => {
+                    errors.push(FileError {
+                        path,
+                        error: error.to_string(),
+                    });
+                }
             }
         }
 
@@ -205,6 +250,25 @@ fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// A tree report for a scan that was stopped before it started.
+fn empty_report(root: &Path, elapsed: Duration) -> DirectoryReport {
+    DirectoryReport {
+        root: root.to_path_buf(),
+        files: Vec::new(),
+        errors: Vec::new(),
+        summary: Summary {
+            files: 0,
+            malicious: 0,
+            suspicious: 0,
+            undetected: 0,
+            inconclusive: 0,
+            unknown: 0,
+            errors: 0,
+            duration_ms: elapsed.as_millis() as u64,
+        },
+    }
 }
 
 fn read_header(path: &Path) -> Result<Vec<u8>, ScanError> {    let file = File::open(path).map_err(|source| ScanError::Io {

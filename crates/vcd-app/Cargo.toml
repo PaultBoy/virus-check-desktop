@@ -1,0 +1,16 @@
+[package]
+name = "vcd-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Virus Check Desktop: local malware triage for Windows."
+
+[[bin]]
+name = "virus-check-desktop"
+path = "src/main.rs"
+
+[dependencies]
+vcd-core = { path = "../vcd-core" }
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.18"
+serde_json.workspace = true
