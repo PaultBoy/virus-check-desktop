@@ -5,6 +5,7 @@
 //! are spawned as processes by their own modules; nothing here links their code.
 
 pub mod clamav;
+pub mod clamd;
 pub mod content;
 pub mod defender;
 pub mod pe_structure;

@@ -1,10 +1,15 @@
 //! ClamAV engine.
 //!
-//! ClamAV is spawned as a process (`clamscan`), never linked: its license is
-//! GPLv2 and its database updates on its own schedule. The engine's own
-//! per-file cap is reported as [`Coverage`], because a 3 GiB file that ClamAV
-//! refused to open must not look like a clean scan.
+//! Preferred path: a managed `clamd` (see [`super::clamd`]) scanned through
+//! `clamdscan`, so the signature database loads once instead of per file. If no
+//! daemon can be started, it falls back to one `clamscan` process per file and
+//! says so, because that cost is real and the report should carry it.
+//!
+//! ClamAV is always a separate process, never linked: its license is GPLv2 and
+//! its database updates on its own schedule. Its per-file cap is reported as
+//! [`Coverage`]: a 3 GiB file that ClamAV refused to open must not look clean.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -13,34 +18,70 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::report::{Coverage, Detection, EngineReport, Fact, Severity};
 
+use super::clamd::{ClamDaemon, MAX_SCAN_BYTES, discover_paths};
 use super::{Engine, ScanTarget};
 
-/// `clamscan(1)` documents `--max-filesize` with a maximum of 2 GB.
-const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-/// Upper bound for one scan. ClamAV's own `--max-scantime` covers the parser;
-/// this covers a process that never returns.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(600);
 
 const HINT: &str = "ClamAV not found: install it and put clamscan.exe on PATH \
      (https://docs.clamav.net/manual/Installing.html) or in C:\\Program Files\\ClamAV";
 
+enum Mode {
+    Unavailable(String),
+    /// Managed daemon plus the `clamdscan` client that talks to it.
+    Daemon { daemon: ClamDaemon, client: PathBuf },
+    Clamscan(PathBuf),
+}
+
 pub struct ClamAvEngine {
-    executable: Option<PathBuf>,
+    mode: Mode,
+    daemon_note: Option<String>,
 }
 
 impl ClamAvEngine {
-    /// Look for `clamscan` on `PATH` and in the default Windows install
-    /// directory. Never fails: a missing engine is reported, not hidden.
-    pub fn discover() -> Self {
+    /// Prefer a daemon; fall back to per-file processes, and record why.
+    pub fn discover(use_daemon: bool) -> Self {
+        let paths = discover_paths();
+        let Some(scan) = paths.scan else {
+            return Self {
+                mode: Mode::Unavailable(HINT.to_string()),
+                daemon_note: None,
+            };
+        };
+
+        let mut note = None;
+
+        if use_daemon
+            && let (Some(daemon), Some(database)) = (paths.daemon, paths.database)
+        {
+            let client = scan.with_file_name("clamdscan.exe");
+            if client.is_file() {
+                match ClamDaemon::start(&daemon, &database) {
+                    Ok(daemon) => {
+                        return Self {
+                            mode: Mode::Daemon { daemon, client },
+                            daemon_note: Some("clamd".to_string()),
+                        };
+                    }
+                    Err(error) => note = Some(format!("clamd unavailable: {error}")),
+                }
+            } else {
+                note = Some("clamdscan.exe not found next to clamscan.exe".to_string());
+            }
+        } else if !use_daemon {
+            note = Some("single-file scan: clamscan, no daemon startup".to_string());
+        }
+
         Self {
-            executable: find_executable(),
+            mode: Mode::Clamscan(scan),
+            daemon_note: note,
         }
     }
 
     pub fn with_executable(executable: PathBuf) -> Self {
         Self {
-            executable: Some(executable),
+            mode: Mode::Clamscan(executable),
+            daemon_note: None,
         }
     }
 }
@@ -51,8 +92,12 @@ impl Engine for ClamAvEngine {
     }
 
     fn scan(&self, target: &ScanTarget<'_>) -> EngineReport {
-        let Some(executable) = &self.executable else {
-            return EngineReport::unavailable(self.name(), HINT);
+        let (program, prefix) = match &self.mode {
+            Mode::Unavailable(hint) => return EngineReport::unavailable(self.name(), hint.clone()),
+            Mode::Daemon { daemon, client } => {
+                (client.as_path(), vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()])
+            }
+            Mode::Clamscan(path) => (path.as_path(), Vec::new()),
         };
 
         let started = Instant::now();
@@ -74,7 +119,7 @@ impl Engine for ClamAvEngine {
         }
 
         let output_path = temp_output_path();
-        let outcome = run_scan(executable, target.path, &output_path);
+        let outcome = run_scan(program, &prefix, target.path, &output_path);
         let stdout = read_text(&output_path).unwrap_or_default();
         let _ = std::fs::remove_file(&output_path);
 
@@ -83,26 +128,36 @@ impl Engine for ClamAvEngine {
             Err(RunError::Timeout) => {
                 return EngineReport::failed(
                     self.name(),
-                    format!("clamscan timed out after {}s", SCAN_TIMEOUT.as_secs()),
+                    format!("ClamAV timed out after {}s", SCAN_TIMEOUT.as_secs()),
                 );
             }
             Err(RunError::Io(error)) => {
-                return EngineReport::failed(self.name(), format!("cannot run clamscan: {error}"));
+                return EngineReport::failed(self.name(), format!("cannot run ClamAV: {error}"));
             }
         };
 
         if exit_code > 1 {
             return EngineReport::failed(
                 self.name(),
-                format!("clamscan exited with code {exit_code}"),
+                format!("ClamAV exited with code {exit_code}"),
             );
         }
 
         let detections = parse_found(&stdout);
-        let facts = vec![Fact::new(
+        let mut facts = vec![Fact::new(
             "signatures",
-            format!("{} detection(s) reported by clamscan", detections.len()),
+            format!("{} detection(s) reported by ClamAV", detections.len()),
         )];
+        facts.push(Fact::new(
+            "mode",
+            match &self.mode {
+                Mode::Daemon { .. } => "clamd (database loaded once)",
+                _ => "clamscan (database loaded per file)",
+            },
+        ));
+        if let Some(note) = &self.daemon_note {
+            facts.push(Fact::new("daemon", note.clone()));
+        }
 
         EngineReport::completed(
             self.name(),
@@ -148,21 +203,26 @@ enum RunError {
     Timeout,
 }
 
-fn run_scan(executable: &Path, target: &Path, output: &Path) -> Result<i32, RunError> {
+fn run_scan(
+    program: &Path,
+    prefix: &[OsString],
+    target: &Path,
+    output: &Path,
+) -> Result<i32, RunError> {
     // Stdout goes to a file, not a pipe: a pipe nobody drains deadlocks the
     // child, and the timeout would then be indistinguishable from a slow scan.
     let sink = File::create(output).map_err(RunError::Io)?;
 
-    let mut child = Command::new(executable)
+    let mut command = Command::new(program);
+    command.args(prefix);
+    command
         .arg("--no-summary")
-        .arg("--stdout")
-        .arg("--max-scantime=600000")
         .arg(target)
         .stdin(Stdio::null())
         .stdout(Stdio::from(sink))
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(RunError::Io)?;
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().map_err(RunError::Io)?;
 
     let deadline = Instant::now() + SCAN_TIMEOUT;
     loop {
@@ -192,21 +252,6 @@ fn temp_output_path() -> PathBuf {
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("vcd-clamav-{}-{unique}.log", std::process::id()))
-}
-
-fn find_executable() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if let Some(path) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&path) {
-            candidates.push(directory.join("clamscan.exe"));
-            candidates.push(directory.join("clamscan"));
-        }
-    }
-    candidates.push(PathBuf::from(r"C:\Program Files\ClamAV\clamscan.exe"));
-    candidates.push(PathBuf::from(r"C:\ClamAV\clamscan.exe"));
-
-    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 #[cfg(test)]
@@ -249,7 +294,11 @@ C:\\samples\\clean.txt: OK
 
     #[test]
     fn missing_engine_is_unavailable_not_failed() {
-        let report = ClamAvEngine { executable: None }.scan(&target(Path::new("x"), 10));
+        let engine = ClamAvEngine {
+            mode: Mode::Unavailable("not installed".to_string()),
+            daemon_note: None,
+        };
+        let report = engine.scan(&target(Path::new("x"), 10));
 
         assert!(matches!(report.status, EngineStatus::Unavailable { .. }));
         assert!(!report.coverage.inspected());

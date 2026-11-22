@@ -33,3 +33,30 @@ impl Drop for TempFile {
         let _ = fs::remove_file(&self.path);
     }
 }
+
+/// A directory in the system temp dir that deletes itself on drop.
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn new(name: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("vcd-test-dir-{unique}-{name}"));
+        fs::create_dir_all(&path).expect("create temp dir");
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}

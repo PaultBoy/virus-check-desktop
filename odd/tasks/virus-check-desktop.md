@@ -37,13 +37,14 @@ S5. Honest verdicts
 - T2b PE body facts: per-section entropy, import table, packer hints (bounded reads), structured facts. S2. inline. done → 44a8798
 - T2c container recursion: ZIP/7z/gzip extraction with depth and byte limits, re-entering the pipeline. S1, S2. inline.
 - T3 ClamAV engine: local `clamscan`, `FOUND` parsing, 2 GiB cap reported as Partial{0}, timeout and process boundary. S1, S5. inline. done → 165fb40
-- T3b ClamAV daemon: own a `clamd` instance from the app so the signature database loads once instead of per file (measured 6.6 s per scan). S1. inline. pending.
+- T3b ClamAV daemon: managed `clamd` on loopback port 3311, config under `%LOCALAPPDATA%`, reused if already listening, stopped when this run owns it, fallback to `clamscan` with the reason in a fact. S1. inline. done. 8 files in 8.3 s versus ~53 s with one process per file.
 - T4 Defender engine: `MpCmdRun -Scan -ScanType 3 -File` with `-DisableRemediation`, exit-code contract, threat-name parsing. S5. inline. done. Verified against EICAR inside a zip (0.16 s) and end to end through the CLI.
 - T5 YARA engine: in-process `yara-x` (no spawn), embedded rules plus `%LOCALAPPDATA%\VirusCheckDesktop\rules`, severity from rule metadata. S1, S2. inline. done. Verified live with a builtin rule and a user rule.
 - T6 sandbox: `.wsb` generation, mapped read-only payload, PowerShell telemetry (process tree via WMI, TCP connections, DNS cache, file/registry diffs), result JSON back to host, timeout + teardown. S2. inline.
 - T7 UI: desktop shell over the core. S3, S4. inline.
 - T8 packaging + CI: `cargo build --release`, release artifact, GitHub Actions on windows-latest. S4. inline.
 - T9 docs: README (prerequisites, engine setup, limits), SECURITY.md. S1, S4. inline.
+- T10 directory scanning: recursive walk without following links, per-file reports, errors listed separately, JSON tree report. S1. inline. done.
 
 ## Log
 
@@ -89,3 +90,5 @@ L20. T4 reversed with a decisive experiment. Timing was never evidence of a no-o
 
 
 L21. T5 YARA-X shipped in process. yara-x 1.24 (BSD-3), default features off except constant-folding, fast-regexp and exact-atoms, which keeps the 25 format modules and their crypto dependencies out; wasmtime still comes along and the first build cost 49 s. Rules come from the embedded `builtin.yar` (EICAR, encoded PowerShell) plus every `*.yar`/`*.yara` in `%LOCALAPPDATA%\VirusCheckDesktop\rules`; a rule file that fails to compile is skipped and reported as a fact, never silently dropped, and severity comes from the rule's `severity` metadata with `suspicious` as the default. Verified live: the builtin rule flags a script containing `-EncodedCommand` (suspicious, exit 1) with `rules: 2`, and a temporary user rule matching a marker reports `rules: 3` and a malicious detection. Cost: 0 ms for YARA against 6.3 s for ClamAV in the same run, which keeps the daemon/scan-cache work (T3b) as the dominant expense.
+
+L22. T3b and directory scanning shipped together, because neither pays alone. Managed `clamd`: config, log and pid under `%LOCALAPPDATA%\VirusCheckDesktop\clamav`, fixed loopback port 3311, a `owner.pid` marker that lets a later run adopt and stop an orphan from a crashed run, `--stop` plus kill on drop, and fallback to `clamscan` with the reason in a `daemon` fact. `Scanner::with_local_engines(scope)` picks the mode: a single file keeps `clamscan` (starting a daemon costs the same ~6.6 s), a tree gets the daemon. Verified live: 6 copies of notepad.exe plus a text file and an encoded-PowerShell script scanned in 8.3 s total (about 53 s if each file loaded the database), `mode: clamd (database loaded once)`, zero listeners left on 3311 afterwards; single file unchanged at 6.8 s with `mode: clamscan`. Directory scan walks without following links, sorts paths for deterministic output, and lists unreadable files as errors instead of dropping them or calling them clean. Exit code 1 when anything is malicious or suspicious.

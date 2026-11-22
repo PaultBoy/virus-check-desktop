@@ -5,8 +5,11 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
-use vcd_core::{Coverage, EngineReport, EngineStatus, ScanReport, Scanner, Verdict};
+use vcd_core::{
+    Coverage, DirectoryReport, EngineReport, EngineStatus, ScanReport, ScanScope, Scanner, Verdict,
+};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,7 +56,44 @@ fn scan_command(args: &[String]) -> ExitCode {
         }
     }
 
-    match Scanner::with_local_engines().scan(Path::new(path)) {
+    let target = Path::new(path);
+    let started = Instant::now();
+    let scope = if target.is_dir() {
+        ScanScope::Tree
+    } else {
+        ScanScope::SingleFile
+    };
+
+    // Built once: a tree scan shares one ClamAV daemon across every file.
+    let scanner = Scanner::with_local_engines(scope);
+
+    if scope == ScanScope::Tree {
+        return match scanner.scan_directory(target) {
+            Ok(report) => {
+                if json {
+                    match serde_json::to_string_pretty(&report) {
+                        Ok(text) => println!("{text}"),
+                        Err(error) => {
+                            eprintln!("error: cannot serialize report: {error}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                } else {
+                    print_tree(&report);
+                    println!();
+                    println!("Took     {}", human_duration(started.elapsed()));
+                }
+
+                tree_exit_code(&report)
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
+    match scanner.scan(target) {
         Ok(report) => {
             if json {
                 match serde_json::to_string_pretty(&report) {
@@ -65,6 +105,10 @@ fn scan_command(args: &[String]) -> ExitCode {
                 }
             } else {
                 print_human(&report);
+                println!(
+                    "Took     {} (engine setup included)",
+                    human_duration(started.elapsed())
+                );
             }
 
             if matches!(report.verdict, Verdict::Malicious | Verdict::Suspicious) {
@@ -120,7 +164,72 @@ fn print_human(report: &ScanReport) {
 
     println!();
     println!("Verdict  {}", report.verdict.label());
-    println!("Took     {} ms", report.duration_ms);
+}
+
+fn print_tree(report: &DirectoryReport) {
+    println!("Root     {}", report.root.display());
+    println!("Files    {}", report.summary.files);
+    println!();
+
+    for file in &report.files {
+        let name = file
+            .target
+            .strip_prefix(&report.root)
+            .unwrap_or(&file.target)
+            .display()
+            .to_string();
+        let findings = findings_line(file);
+
+        if findings.is_empty() {
+            println!("{:<12} {}", file.verdict.label(), shorten(&name, 60));
+        } else {
+            println!(
+                "{:<12} {}  {}",
+                file.verdict.label(),
+                shorten(&name, 60),
+                shorten(&findings, 90)
+            );
+        }
+    }
+
+    for failure in &report.errors {
+        println!(
+            "{:<12} {}: {}",
+            "ERROR",
+            shorten(&failure.path.display().to_string(), 60),
+            shorten(&failure.error, 90)
+        );
+    }
+
+    println!();
+    println!(
+        "{} files | {} malicious | {} suspicious | {} undetected | {} inconclusive | {} unknown | {} errors",
+        report.summary.files,
+        report.summary.malicious,
+        report.summary.suspicious,
+        report.summary.undetected,
+        report.summary.inconclusive,
+        report.summary.unknown,
+        report.summary.errors
+    );
+}
+
+fn findings_line(file: &ScanReport) -> String {
+    let mut parts = Vec::new();
+    for engine in &file.engines {
+        for detection in &engine.detections {
+            parts.push(format!("{}: {}", engine.engine, detection.detail));
+        }
+    }
+    parts.join("; ")
+}
+
+fn tree_exit_code(report: &DirectoryReport) -> ExitCode {
+    if report.summary.malicious + report.summary.suspicious > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn print_detections(engine: &EngineReport) {
@@ -134,7 +243,7 @@ fn print_detections(engine: &EngineReport) {
     }
 }
 
-/// Keep a fact readable in a terminal; the JSON keeps the full value.
+/// Keep a value readable in a terminal; the JSON keeps the full text.
 fn shorten(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         return value.to_string();
@@ -145,7 +254,8 @@ fn shorten(value: &str, limit: usize) -> String {
     shortened
 }
 
-fn coverage_label(coverage: &Coverage) -> String {    match coverage {
+fn coverage_label(coverage: &Coverage) -> String {
+    match coverage {
         Coverage::Complete => "coverage: complete".to_string(),
         Coverage::Partial {
             scanned_bytes,
@@ -170,13 +280,22 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+fn human_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1000 {
+        format!("{millis} ms")
+    } else {
+        format!("{:.1} s", duration.as_secs_f64())
+    }
+}
+
 fn print_usage() {
     println!(
         "\
 vcd - local malware triage. No upload, no size cap of its own.
 
 Usage:
-  vcd scan <path> [--json]   Analyze one file
+  vcd scan <path> [--json]   Analyze a file or a directory tree
   vcd version                Print the version
 
 Exit codes:

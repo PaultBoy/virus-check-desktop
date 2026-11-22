@@ -1,0 +1,273 @@
+//! Managed `clamd` instance.
+//!
+//! `clamscan` loads the whole signature database on every process start (~6 s
+//! per file on this machine), so scanning more than one file that way is
+//! hopeless. This module owns a `clamd` for the lifetime of the process:
+//!
+//! - config and logs under `%LOCALAPPDATA%\VirusCheckDesktop\clamav`;
+//! - a fixed loopback port, so a daemon left behind by a previous run is
+//!   reused instead of piling up;
+//! - a pid marker file records that *we* started it, which is what lets a
+//!   later run adopt and stop an orphan;
+//! - dropping the handle stops the daemon it started.
+
+use std::fs;
+use std::io::Write;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+pub(crate) const DAEMON_PORT: u16 = 3311;
+const START_TIMEOUT: Duration = Duration::from_secs(30);
+const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// A single file above this is refused by ClamAV itself.
+pub(crate) const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+pub(crate) struct ClamPaths {
+    pub scan: Option<PathBuf>,
+    pub daemon: Option<PathBuf>,
+    pub database: Option<PathBuf>,
+}
+
+pub(crate) fn discover_paths() -> ClamPaths {
+    let install = Path::new(r"C:\Program Files\ClamAV");
+
+    ClamPaths {
+        scan: find_binary("clamscan", install),
+        daemon: find_binary("clamd", install),
+        database: find_database(install),
+    }
+}
+
+fn find_binary(name: &str, install: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            candidates.push(directory.join(format!("{name}.exe")));
+            candidates.push(directory.join(name));
+        }
+    }
+    candidates.push(install.join(format!("{name}.exe")));
+    candidates.push(Path::new(r"C:\ClamAV").join(format!("{name}.exe")));
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn find_database(install: &Path) -> Option<PathBuf> {
+    [install.join("database"), PathBuf::from(r"C:\ClamAV\db")]
+        .into_iter()
+        .find(|directory| directory.join("daily.cvd").is_file() || directory.join("daily.cld").is_file())
+}
+
+pub(crate) struct ClamDaemon {
+    config: PathBuf,
+    child: Option<Child>,
+    /// True when this run is responsible for stopping the daemon, either
+    /// because it started one or because the marker file shows an earlier run
+    /// did.
+    owned: bool,
+}
+
+impl ClamDaemon {
+    /// Start a daemon, or adopt one already listening on the configured port.
+    pub fn start(daemon: &Path, database: &Path) -> Result<Self, String> {
+        let work_dir = work_dir();
+        fs::create_dir_all(&work_dir).map_err(|error| format!("cannot create {work_dir:?}: {error}"))?;
+
+        let config = work_dir.join("clamd.conf");
+        let marker = work_dir.join("owner.pid");
+        write_config(&config, database, &work_dir)?;
+
+        if port_is_open() {
+            let adopted = marker.is_file();
+            if adopted {
+                // We started it in a previous run; keep ownership so it can be
+                // stopped at the end of this one.
+                let _ = fs::write(&marker, std::process::id().to_string());
+            }
+            return Ok(Self {
+                config,
+                child: None,
+                owned: adopted,
+            });
+        }
+
+        let log = work_dir.join("clamd.log");
+        let sink = fs::File::create(&log).map_err(|error| format!("cannot create log: {error}"))?;
+        let stderr = sink.try_clone().map_err(|error| format!("cannot clone log: {error}"))?;
+
+        let mut child = Command::new(daemon)
+            .arg("-c")
+            .arg(&config)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(sink))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .map_err(|error| format!("cannot start clamd: {error}"))?;
+
+        let deadline = Instant::now() + START_TIMEOUT;
+        loop {
+            if port_is_open() {
+                let _ = fs::write(&marker, std::process::id().to_string());
+                return Ok(Self {
+                    config,
+                    child: Some(child),
+                    owned: true,
+                });
+            }
+
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "clamd exited with {status}: {}",
+                        log_tail(&log)
+                    ));
+                }
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    return Err(format!(
+                        "clamd did not listen within {}s: {}",
+                        START_TIMEOUT.as_secs(),
+                        log_tail(&log)
+                    ));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+                Err(error) => return Err(format!("cannot watch clamd: {error}")),
+            }
+        }
+    }
+
+    pub fn config(&self) -> &Path {
+        &self.config
+    }
+}
+
+impl Drop for ClamDaemon {
+    fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
+
+        // Ask politely first, then make sure the child is gone.
+        let _ = Command::new(clamdscan_path())
+            .arg("-c")
+            .arg(&self.config)
+            .arg("--stop")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = fs::remove_file(work_dir().join("owner.pid"));
+    }
+}
+
+fn clamdscan_path() -> PathBuf {
+    discover_paths()
+        .scan
+        .map(|path| path.with_file_name("clamdscan.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files\ClamAV\clamdscan.exe"))
+}
+
+pub(crate) fn work_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("VirusCheckDesktop")
+        .join("clamav")
+}
+
+fn port_is_open() -> bool {
+    let Ok(mut addresses) = ("127.0.0.1", DAEMON_PORT).to_socket_addrs() else {
+        return false;
+    };
+    addresses.any(|address| TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok())
+}
+
+fn write_config(config: &Path, database: &Path, work_dir: &Path) -> Result<(), String> {
+    let log = work_dir.join("clamd.log");
+    let pid = work_dir.join("clamd.pid");
+    let temp = std::env::temp_dir();
+
+    let mut file = fs::File::create(config).map_err(|error| format!("cannot write config: {error}"))?;
+    let contents = format!(
+        "\
+DatabaseDirectory \"{}\"
+TemporaryDirectory \"{}\"
+LogFile \"{}\"
+LogTime yes
+PidFile \"{}\"
+TCPSocket {}
+TCPAddr 127.0.0.1
+MaxFileSize {}M
+MaxScanSize {}M
+MaxFiles 10000
+MaxRecursion 17
+MaxThreads 2
+",
+        database.display(),
+        temp.display(),
+        log.display(),
+        pid.display(),
+        DAEMON_PORT,
+        MAX_SCAN_BYTES / (1024 * 1024),
+        MAX_SCAN_BYTES / (1024 * 1024),
+    );
+    file.write_all(contents.as_bytes())
+        .map_err(|error| format!("cannot write config: {error}"))
+}
+
+fn log_tail(log: &Path) -> String {
+    fs::read_to_string(log)
+        .map(|text| {
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .next_back()
+                .unwrap_or("no log output")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "no log file".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_carries_the_caps_and_the_loopback_port() {
+        let directory = std::env::temp_dir().join(format!("vcd-clamd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("create dir");
+        let config = directory.join("clamd.conf");
+
+        write_config(&config, Path::new(r"C:\db"), &directory).expect("write config");
+        let text = fs::read_to_string(&config).expect("read config");
+
+        assert!(text.contains(&format!("TCPSocket {DAEMON_PORT}")));
+        assert!(text.contains("TCPAddr 127.0.0.1"));
+        assert!(text.contains("DatabaseDirectory \"C:\\db\""));
+        assert!(text.contains("MaxFileSize 2048M"));
+        assert!(text.contains("MaxScanSize 2048M"));
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn missing_database_is_not_reported_as_available() {
+        let paths = discover_paths();
+        assert_eq!(
+            paths.database.is_some(),
+            paths
+                .database
+                .as_ref()
+                .is_some_and(|directory| directory.is_dir())
+        );
+    }
+}

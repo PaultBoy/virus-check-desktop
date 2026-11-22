@@ -201,6 +201,35 @@ pub struct ScanReport {
     pub scanned_at_unix_ms: u64,
 }
 
+/// Result of scanning a directory tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryReport {
+    pub root: PathBuf,
+    pub files: Vec<ScanReport>,
+    pub errors: Vec<FileError>,
+    pub summary: Summary,
+}
+
+/// A file that could not be read. Reported next to the results, never as a
+/// clean file and never as a failed scan of the whole tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileError {
+    pub path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Summary {
+    pub files: usize,
+    pub malicious: usize,
+    pub suspicious: usize,
+    pub undetected: usize,
+    pub inconclusive: usize,
+    pub unknown: usize,
+    pub errors: usize,
+    pub duration_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

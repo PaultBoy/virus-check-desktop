@@ -15,6 +15,7 @@ Windows Sandbox engines are the next tasks (see `odd/tasks/virus-check-desktop.m
 
 ```
 vcd scan .\invoice.pdf
+vcd scan .\samples\        # whole tree, one ClamAV database load for all files
 ```
 
 - Types the file from its magic bytes, not its extension.
@@ -34,6 +35,8 @@ vcd scan .\invoice.pdf
   encoded PowerShell commands) plus every `*.yar`/`*.yara` file dropped in
   `%LOCALAPPDATA%\VirusCheckDesktop\rules`. Severity comes from the rule's
   `severity` metadata (`malicious`, `suspicious`, `info`).
+- Scans a directory tree recursively (links skipped), prints one line per file
+  and a summary, and lists unreadable files as errors instead of dropping them.
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
@@ -59,9 +62,9 @@ The CLI lands in `target/release/vcd.exe`.
 
 ## Known limitations
 
-- ClamAV loads its signature database on every `clamscan` invocation: about
-  6.6 s per file. A managed `clamd` pays off only when one process scans several
-  files, so it is paired with the UI or with directory scanning.
+- A single-file scan still pays one `clamscan` startup (~6.6 s): starting a
+  daemon for one file costs the same or more. Directory scans use a managed
+  `clamd` and load the database once.
 - A clean Defender answer may come from its scan cache (real-time protection
   already read the file when it was written), and paths listed in Defender's
   exclusions are invisible to us without administrator rights. The engine
@@ -99,7 +102,8 @@ additional terms or conditions.
 | File | Time | Notes |
 | --- | --- | --- |
 | 2 GiB, hashing only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
-| 352 KiB, with ClamAV | 6.6 s | signature database is loaded per `clamscan` process; a managed `clamd` is the fix (T3b) |
+| 352 KiB, with ClamAV | 6.6 s | single file: `clamscan` loads the database per process |
+| 8 files, directory tree | 8.3 s | one managed `clamd` for the whole tree |
 | EICAR inside a zip | 0.07 s | Defender detection path: exit 2 and the signature name |
 | Any file, YARA-X | < 0.01 s | in-process pattern matching, no database to load |
 

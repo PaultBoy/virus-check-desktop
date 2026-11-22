@@ -18,6 +18,9 @@ pub mod verdict;
 pub(crate) mod test_support;
 
 pub use filetype::{ContentType, Family};
-pub use report::{Coverage, Detection, EngineReport, EngineStatus, Fact, ScanReport, Severity};
-pub use scanner::{ScanError, Scanner};
+pub use report::{
+    Coverage, Detection, DirectoryReport, EngineReport, EngineStatus, Fact, FileError, ScanReport,
+    Severity, Summary,
+};
+pub use scanner::{ScanError, ScanScope, Scanner};
 pub use verdict::Verdict;
