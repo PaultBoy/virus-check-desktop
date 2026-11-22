@@ -51,6 +51,15 @@ cargo build --release
 
 The CLI lands in `target/release/vcd.exe`.
 
+## Known limitations
+
+- ClamAV loads its signature database on every `clamscan` invocation: about
+  6.6 s per file. A managed `clamd` pays off only when one process scans several
+  files, so it is paired with the UI or with directory scanning.
+- There is no Defender engine. `MpCmdRun`'s custom scan returns "no threats" in
+  ~30 ms for 100 MB of random data without reading it; Windows Defender already
+  scans files on write, so the marginal value would be low anyway.
+
 ## Design rule
 
 No report may claim more than was actually inspected. Every engine returns its
