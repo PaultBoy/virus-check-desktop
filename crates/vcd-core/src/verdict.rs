@@ -161,6 +161,7 @@ mod tests {
                 error: "exit code 2".into(),
             },
             detections: vec![],
+            facts: vec![],
             coverage: Coverage::Complete,
             duration_ms: 4,
         };

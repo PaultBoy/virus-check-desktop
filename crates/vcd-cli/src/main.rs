@@ -111,6 +111,10 @@ fn print_human(report: &ScanReport) {
             _ => {}
         }
 
+        for fact in &engine.facts {
+            println!("    {}: {}", fact.name, shorten(&fact.value, 80));
+        }
+
         print_detections(engine);
     }
 
@@ -130,8 +134,18 @@ fn print_detections(engine: &EngineReport) {
     }
 }
 
-fn coverage_label(coverage: &Coverage) -> String {
-    match coverage {
+/// Keep a fact readable in a terminal; the JSON keeps the full value.
+fn shorten(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+
+    let mut shortened: String = value.chars().take(limit.saturating_sub(3)).collect();
+    shortened.push_str("...");
+    shortened
+}
+
+fn coverage_label(coverage: &Coverage) -> String {    match coverage {
         Coverage::Complete => "coverage: complete".to_string(),
         Coverage::Partial {
             scanned_bytes,

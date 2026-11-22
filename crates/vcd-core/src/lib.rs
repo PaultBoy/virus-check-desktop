@@ -14,7 +14,10 @@ pub mod report;
 pub mod scanner;
 pub mod verdict;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use filetype::{ContentType, Family};
-pub use report::{Coverage, Detection, EngineReport, EngineStatus, ScanReport, Severity};
+pub use report::{Coverage, Detection, EngineReport, EngineStatus, Fact, ScanReport, Severity};
 pub use scanner::{ScanError, Scanner};
 pub use verdict::Verdict;

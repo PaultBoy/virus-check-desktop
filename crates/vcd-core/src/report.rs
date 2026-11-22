@@ -64,6 +64,23 @@ pub struct Detection {
     pub detail: String,
 }
 
+/// A measured property the UI can render as a table row. Facts carry no
+/// judgement: they are what the engine saw, not what it concluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fact {
+    pub name: String,
+    pub value: String,
+}
+
+impl Fact {
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EngineStatus {
@@ -92,6 +109,8 @@ pub struct EngineReport {
     pub engine: String,
     pub status: EngineStatus,
     pub detections: Vec<Detection>,
+    /// Measured properties, not findings.
+    pub facts: Vec<Fact>,
     pub coverage: Coverage,
     pub duration_ms: u64,
 }
@@ -107,9 +126,15 @@ impl EngineReport {
             engine: engine.into(),
             status: EngineStatus::Completed,
             detections,
+            facts: Vec::new(),
             coverage,
             duration_ms: duration.as_millis() as u64,
         }
+    }
+
+    pub fn with_facts(mut self, facts: Vec<Fact>) -> Self {
+        self.facts = facts;
+        self
     }
 
     pub fn unavailable(engine: impl Into<String>, hint: impl Into<String>) -> Self {
@@ -119,8 +144,24 @@ impl EngineReport {
                 hint: hint.into(),
             },
             detections: Vec::new(),
+            facts: Vec::new(),
             coverage: Coverage::None {
                 reason: "engine unavailable".to_string(),
+            },
+            duration_ms: 0,
+        }
+    }
+
+    pub fn failed(engine: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            engine: engine.into(),
+            status: EngineStatus::Failed {
+                error: error.into(),
+            },
+            detections: Vec::new(),
+            facts: Vec::new(),
+            coverage: Coverage::None {
+                reason: "engine failed".to_string(),
             },
             duration_ms: 0,
         }
@@ -134,6 +175,7 @@ impl EngineReport {
                 reason: reason.clone(),
             },
             detections: Vec::new(),
+            facts: Vec::new(),
             coverage: Coverage::None { reason },
             duration_ms: 0,
         }

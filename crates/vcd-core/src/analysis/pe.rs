@@ -11,6 +11,7 @@ pub struct PeSection {
     pub virtual_address: u32,
     pub virtual_size: u32,
     pub raw_size: u32,
+    pub raw_pointer: u32,
     pub characteristics: u32,
     pub printable_name: bool,
 }
@@ -47,6 +48,8 @@ pub struct PeImage {
     pub is_dotnet: bool,
     pub is_dll: bool,
     pub sections: Vec<PeSection>,
+    /// (rva, size) pairs, index order as defined by the PE format.
+    pub data_directories: Vec<(u32, u32)>,
 }
 
 impl PeImage {
@@ -73,6 +76,17 @@ impl PeImage {
                 .sections
                 .iter()
                 .any(|section| section.contains(self.entry_point))
+    }
+
+    /// Translate a relative virtual address into a file offset using the
+    /// section table, or `None` when it falls outside every section.
+    pub fn rva_to_offset(&self, rva: u32) -> Option<u64> {
+        self.sections
+            .iter()
+            .find(|section| section.contains(rva))
+            .map(|section| {
+                section.raw_pointer as u64 + (rva - section.virtual_address) as u64
+            })
     }
 
     pub fn parse(data: &[u8]) -> Option<PeImage> {
@@ -138,9 +152,19 @@ impl PeImage {
                 virtual_address: u32_at(raw, 12)?,
                 virtual_size: u32_at(raw, 8)?,
                 raw_size: u32_at(raw, 16)?,
+                raw_pointer: u32_at(raw, 20)?,
                 characteristics: u32_at(raw, 36)?,
                 printable_name: is_printable_name(&raw[..8]),
             });
+        }
+
+        let mut data_directories = Vec::new();
+        for index in 0..(directory_count as usize).min(16) {
+            let at = directory_start + (index * 8);
+            if at + 8 > optional.len() || at + 8 > optional_size {
+                break;
+            }
+            data_directories.push((u32_at(optional, at)?, u32_at(optional, at + 4)?));
         }
 
         Some(PeImage {
@@ -153,6 +177,7 @@ impl PeImage {
             is_dotnet,
             is_dll: characteristics & Self::DLL_CHARACTERISTIC != 0,
             sections,
+            data_directories,
         })
     }
 }
@@ -200,7 +225,7 @@ pub(crate) mod tests {
     use super::*;
 
     const OPTIONAL_SIZE: usize = 0xE0;
-    const SECTION_TABLE: usize = 0x40 + 24 + OPTIONAL_SIZE;
+    pub(crate) const SECTION_TABLE: usize = 0x40 + 24 + OPTIONAL_SIZE;
 
     /// Minimal but structurally valid PE32 image: DOS header, PE signature, one
     /// section, and the optional-header fields the parser reads.
@@ -238,6 +263,22 @@ pub(crate) mod tests {
         };
         data[section + 36..section + 40].copy_from_slice(&flags.to_le_bytes());
 
+        data
+    }
+
+    /// A valid PE whose single section carries `len` bytes produced by `fill`,
+    /// used to exercise the sampled-body analysis.
+    pub(crate) fn minimal_pe_with_section_body(
+        len: usize,
+        fill: impl Fn(usize) -> u8,
+    ) -> Vec<u8> {
+        let mut data = minimal_pe(0x1000, false, false, false);
+        data.resize(0x400 + len, 0);
+        data[SECTION_TABLE + 8..SECTION_TABLE + 12].copy_from_slice(&(len as u32).to_le_bytes());
+        data[SECTION_TABLE + 16..SECTION_TABLE + 20].copy_from_slice(&(len as u32).to_le_bytes());
+        for index in 0..len {
+            data[0x400 + index] = fill(index);
+        }
         data
     }
 
@@ -295,6 +336,7 @@ pub(crate) mod tests {
             virtual_address: 0x1000,
             virtual_size: 0x200,
             raw_size: 0x800,
+            raw_pointer: 0x400,
             characteristics: 0x6000_0020,
             printable_name: true,
         };
