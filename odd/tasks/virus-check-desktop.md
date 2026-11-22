@@ -31,8 +31,8 @@ S5. Honest verdicts
 
 ## Tasks
 
-- T1 core: streaming digests, content typing, report/verdict model, scanner, CLI. S1, S2, S5. inline. done → root commit
-- T2a PE header structure: section table, entry point bounds, W+X sections, CLR flag. S2. inline. done → root commit
+- T1 core: streaming digests, content typing, report/verdict model, scanner, CLI. S1, S2, S5. inline. done → b1fa47f
+- T2a PE header structure: section table, entry point bounds, W+X sections, CLR flag. S2. inline. done → b1fa47f
 - T2b PE body facts: per-section entropy, imports, packer hints (bounded reads). S2. inline.
 - T2c container recursion: ZIP/7z/gzip extraction with depth and byte limits, re-entering the pipeline. S1, S2. inline.
 - T3 ClamAV engine: local `clamscan`/`clamd` detection, `--max-filesize` 2 GiB cap reported as Partial. S1, S5. inline.
