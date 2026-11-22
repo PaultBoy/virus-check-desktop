@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::engines::{
     ClamAvEngine, ContentTypeEngine, DefenderEngine, Engine, PeStructureEngine, ScanTarget,
+    YaraEngine,
 };
 use crate::filetype::{HEADER_BYTES, detect, extension_of};
 use crate::hashing::hash_file;
@@ -50,6 +51,7 @@ impl Scanner {
             Box::new(ContentTypeEngine),
             Box::new(PeStructureEngine),
             Box::new(DefenderEngine::discover()),
+            Box::new(YaraEngine::discover()),
             Box::new(ClamAvEngine::discover()),
         ])
     }

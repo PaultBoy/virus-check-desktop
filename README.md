@@ -30,6 +30,10 @@ vcd scan .\invoice.pdf
   reports a file above ClamAV's 2 GiB cap as unscanned rather than clean.
 - Runs Microsoft Defender's command line scanner with `-DisableRemediation`, so
   a scan never quarantines or deletes the user's files.
+- Matches YARA rules in process through YARA-X: two built-in rules (EICAR and
+  encoded PowerShell commands) plus every `*.yar`/`*.yara` file dropped in
+  `%LOCALAPPDATA%\VirusCheckDesktop\rules`. Severity comes from the rule's
+  `severity` metadata (`malicious`, `suspicious`, `info`).
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
@@ -97,6 +101,7 @@ additional terms or conditions.
 | 2 GiB, hashing only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
 | 352 KiB, with ClamAV | 6.6 s | signature database is loaded per `clamscan` process; a managed `clamd` is the fix (T3b) |
 | EICAR inside a zip | 0.07 s | Defender detection path: exit 2 and the signature name |
+| Any file, YARA-X | < 0.01 s | in-process pattern matching, no database to load |
 
 Files above 4 MiB hash each algorithm on its own thread over shared read-only
 chunks; smaller files stay on the single-threaded path, where thread setup would

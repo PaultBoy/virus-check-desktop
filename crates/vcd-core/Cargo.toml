@@ -11,6 +11,7 @@ thiserror.workspace = true
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
+yara-x = { version = "1.24", default-features = false, features = ["constant-folding", "fast-regexp", "exact-atoms"] }
 
 [dev-dependencies]
 serde_json.workspace = true
