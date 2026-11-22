@@ -1,0 +1,71 @@
+# Virus Check Desktop
+
+Local malware triage for Windows. Files are analyzed on your machine: nothing is
+uploaded, and the tool imposes no size cap of its own.
+
+> Not affiliated with VirusTotal. This is not a clone of it: it runs local
+> engines and reports what each one actually inspected.
+
+## Status
+
+Early. The static core and CLI work today; the ClamAV, Defender, YARA and
+Windows Sandbox engines are the next tasks (see `odd/tasks/virus-check-desktop.md`).
+
+## What it does now
+
+```
+vcd scan .\invoice.pdf
+```
+
+- Types the file from its magic bytes, not its extension.
+- Computes MD5, SHA-1 and SHA-256 in one streaming pass, so memory use is
+  independent of the file size.
+- Flags masquerading: executable content behind a document extension, and
+  double extensions such as `photo.jpg.exe`.
+- Parses PE headers: entry point outside every section, writable+executable
+  sections, section count, managed assemblies.
+- Reports per-engine coverage, so a skipped range can never hide behind a
+  quiet verdict.
+
+Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
+
+`--json` prints the same report as machine-readable JSON.
+
+## Requirements
+
+- Windows 10/11
+- Rust 1.90+ with the MSVC toolchain (Rust build only)
+
+## Build and test
+
+```powershell
+cargo test --workspace
+cargo build --release
+```
+
+The CLI lands in `target/release/vcd.exe`.
+
+## Design rule
+
+No report may claim more than was actually inspected. Every engine returns its
+own `Coverage`:
+
+| Coverage | Meaning |
+| --- | --- |
+| `Complete` | every byte the engine is responsible for was inspected |
+| `Partial` | part of the file was inspected; the reason names the engine's own cap |
+| `None` | nothing was inspected; the reason says why |
+
+A verdict is `Undetected` only when no engine reported a detection *and* every
+engine covered its whole range. Otherwise it is `Inconclusive` (a range was
+skipped, an engine could not run, or an engine failed) or `Unknown` (nothing was
+inspected at all).
+
+## Known measurements
+
+| File | Time | Notes |
+| --- | --- | --- |
+| 2 GiB, header only | 12.2 s | MD5+SHA-1+SHA-256 in one pass, constant memory |
+
+Hashing is CPU-bound on the pure-Rust MD5/SHA-1 implementations; parallelizing
+the three hashers or deferring MD5/SHA-1 to reputation lookups is an open task.

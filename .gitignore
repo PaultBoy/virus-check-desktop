@@ -1,0 +1,8 @@
+# Build output
+/target/
+
+# Tool artifacts
+.atl/
+
+# Local notes
+/odd/**/*.local.md

@@ -1,0 +1,16 @@
+[package]
+name = "vcd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static analysis core for Virus Check Desktop: digests, content typing, engine orchestration."
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json.workspace = true
