@@ -4,6 +4,7 @@
 //! status, findings and coverage. External engines (ClamAV, Defender, YARA-X)
 //! are spawned as processes by their own modules; nothing here links their code.
 
+pub mod clamav;
 pub mod content;
 pub mod pe_structure;
 
@@ -12,6 +13,7 @@ use std::path::Path;
 use crate::filetype::ContentType;
 use crate::report::EngineReport;
 
+pub use clamav::ClamAvEngine;
 pub use content::ContentTypeEngine;
 pub use pe_structure::PeStructureEngine;
 

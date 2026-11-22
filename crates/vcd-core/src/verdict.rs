@@ -47,10 +47,13 @@ pub fn aggregate(engines: &[EngineReport]) -> Verdict {
                 completed = true;
                 match &engine.coverage {
                     Coverage::Complete => inspected = true,
-                    Coverage::Partial { .. } => {
+                    Coverage::Partial { scanned_bytes, .. } => {
                         // Something was read, but a range was skipped: quiet is
-                        // not the same as covered.
-                        inspected = true;
+                        // not the same as covered. Zero bytes read means the
+                        // engine could not open what it is responsible for.
+                        if *scanned_bytes > 0 {
+                            inspected = true;
+                        }
                         incomplete = true;
                     }
                     Coverage::None { .. } => incomplete = true,
@@ -120,6 +123,32 @@ mod tests {
             vec![],
         )];
         assert_eq!(aggregate(&engines), Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn partial_coverage_with_zero_bytes_is_not_inspection() {
+        let zero = Coverage::Partial {
+            scanned_bytes: 0,
+            reason: "engine cap".into(),
+        };
+        assert!(!zero.inspected());
+        assert_eq!(
+            aggregate(&[report(zero, vec![])]),
+            Verdict::Unknown,
+        );
+        assert_eq!(
+            aggregate(&[
+                report(Coverage::Complete, vec![]),
+                report(
+                    Coverage::Partial {
+                        scanned_bytes: 0,
+                        reason: "engine cap".into()
+                    },
+                    vec![]
+                )
+            ]),
+            Verdict::Inconclusive,
+        );
     }
 
     #[test]

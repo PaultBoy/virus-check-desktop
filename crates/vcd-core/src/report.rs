@@ -27,8 +27,14 @@ pub enum Coverage {
 }
 
 impl Coverage {
+    /// `Partial` with zero bytes read is not inspection: it is an engine that
+    /// could not open what it is responsible for.
     pub fn inspected(&self) -> bool {
-        !matches!(self, Coverage::None { .. })
+        match self {
+            Coverage::Complete => true,
+            Coverage::Partial { scanned_bytes, .. } => *scanned_bytes > 0,
+            Coverage::None { .. } => false,
+        }
     }
 
     pub fn is_complete(&self) -> bool {

@@ -32,10 +32,11 @@ S5. Honest verdicts
 ## Tasks
 
 - T1 core: streaming digests, content typing, report/verdict model, scanner, CLI. S1, S2, S5. inline. done → b1fa47f
+- T1b hashing throughput: three threads over one sequential read above 4 MiB. S1. inline. done → ef0e891
 - T2a PE header structure: section table, entry point bounds, W+X sections, CLR flag. S2. inline. done → b1fa47f
-- T2b PE body facts: per-section entropy, imports, packer hints (bounded reads). S2. inline.
+- T2b PE body facts: per-section entropy, import table, packer hints (bounded reads), structured facts. S2. inline. done → 44a8798
 - T2c container recursion: ZIP/7z/gzip extraction with depth and byte limits, re-entering the pipeline. S1, S2. inline.
-- T3 ClamAV engine: local `clamscan`/`clamd` detection, `--max-filesize` 2 GiB cap reported as Partial. S1, S5. inline.
+- T3 ClamAV engine: local `clamscan`, `FOUND` parsing, 2 GiB cap reported as Partial{0}, timeout and process boundary. S1, S5. inline. done
 - T4 Defender engine: `MpCmdRun.exe -Scan -ScanType 3 -File`, threat parsing. S5. inline.
 - T5 YARA engine: YARA-X `yr` CLI, compiled rules, chunked scanning with overlap for oversized files. S1, S2. inline.
 - T6 sandbox: `.wsb` generation, mapped read-only payload, PowerShell telemetry (process tree via WMI, TCP connections, DNS cache, file/registry diffs), result JSON back to host, timeout + teardown. S2. inline.
@@ -72,4 +73,6 @@ L12. Performance regression accepted and recorded, not hidden: 2 GiB in 12.2 s w
 L13. License decided by the user: MIT OR Apache-2.0, the Rust convention. `LICENSE-MIT` written, `LICENSE-APACHE` downloaded from apache.org rather than transcribed, and the workspace `license` field updated. No dependency forces a copyleft choice: ClamAV is spawned as a process and YARA-X is permissively licensed.
 
 L14. T2b hashing fixed by measurement, not by guess: three worker threads consume shared `Arc` chunks from one sequential read, with a bounded queue of two chunks per worker. 2 GiB went from 12.2 s to 2.7 s (~800 MB/s) with an identical SHA-256, and memory stayed constant. Files under 4 MiB keep the single-threaded path because thread setup costs more than it saves there.
+
+L15. T2b PE facts and T3 ClamAV. Engines can now return `Fact`s next to `Detection`s, because a report that can only say "nothing found" cannot show entropy 7.81 or an import list. `Coverage::Partial { scanned_bytes: 0 }` is now treated as *not inspected*: that is exactly the ClamAV case for a file above its 2 GiB cap, and the previous semantics would have counted it as inspected. ClamAV runs as a process with stdout redirected to a file (a pipe nobody drains deadlocks the child), a 10-minute wall clock, and `--max-scantime=600000` for its own parser. Integration state on this machine: ClamAV is not installed, so the engine reports `Unavailable`, the verdict is `Inconclusive`, and the CLI prints the install hint. The parser, the cap path and the failure path are covered by tests; a real `clamscan` run is still pending on a machine that has it.
 

@@ -5,7 +5,9 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::engines::{ContentTypeEngine, Engine, PeStructureEngine, ScanTarget};
+use crate::engines::{
+    ClamAvEngine, ContentTypeEngine, Engine, PeStructureEngine, ScanTarget,
+};
 use crate::filetype::{HEADER_BYTES, detect, extension_of};
 use crate::hashing::hash_file;
 use crate::report::ScanReport;
@@ -37,6 +39,17 @@ impl Scanner {
         Self::new(vec![
             Box::new(ContentTypeEngine),
             Box::new(PeStructureEngine),
+        ])
+    }
+
+    /// Everything this machine can run. An external engine that is missing is
+    /// reported as unavailable, which makes the verdict Inconclusive instead of
+    /// pretending the check happened.
+    pub fn with_local_engines() -> Self {
+        Self::new(vec![
+            Box::new(ContentTypeEngine),
+            Box::new(PeStructureEngine),
+            Box::new(ClamAvEngine::discover()),
         ])
     }
 

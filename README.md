@@ -24,6 +24,10 @@ vcd scan .\invoice.pdf
   double extensions such as `photo.jpg.exe`.
 - Parses PE headers: entry point outside every section, writable+executable
   sections, section count, managed assemblies.
+- Reads the import table and samples section bodies for entropy, within a fixed
+  budget; a large native image with no imports is flagged.
+- Runs ClamAV when `clamscan` is available, parses its `FOUND` signatures, and
+  reports a file above ClamAV's 2 GiB cap as unscanned rather than clean.
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
@@ -35,6 +39,8 @@ Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
 
 - Windows 10/11
 - Rust 1.90+ with the MSVC toolchain (Rust build only)
+- Optional: ClamAV on `PATH` or in `C:\Program Files\ClamAV` for signature
+  scanning. Without it the report says so and the verdict is `Inconclusive`.
 
 ## Build and test
 

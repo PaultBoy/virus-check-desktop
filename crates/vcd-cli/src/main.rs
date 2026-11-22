@@ -53,7 +53,7 @@ fn scan_command(args: &[String]) -> ExitCode {
         }
     }
 
-    match Scanner::with_builtin().scan(Path::new(path)) {
+    match Scanner::with_local_engines().scan(Path::new(path)) {
         Ok(report) => {
             if json {
                 match serde_json::to_string_pretty(&report) {
