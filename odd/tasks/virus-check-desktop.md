@@ -69,3 +69,7 @@ L11. Port verified by differential run, not by inspection: same 9-file corpus (s
 
 L12. Performance regression accepted and recorded, not hidden: 2 GiB in 12.2 s with Rust versus 6.2 s with .NET. .NET hashes MD5/SHA-1 through Windows CNG with hardware acceleration; the `md-5`/`sha1` crates are pure Rust. Correctness is identical; throughput is a follow-up task (parallelize the three hashers or defer MD5/SHA-1 to reputation lookups). Recorded in the README under known measurements.
 
+L13. License decided by the user: MIT OR Apache-2.0, the Rust convention. `LICENSE-MIT` written, `LICENSE-APACHE` downloaded from apache.org rather than transcribed, and the workspace `license` field updated. No dependency forces a copyleft choice: ClamAV is spawned as a process and YARA-X is permissively licensed.
+
+L14. T2b hashing fixed by measurement, not by guess: three worker threads consume shared `Arc` chunks from one sequential read, with a bounded queue of two chunks per worker. 2 GiB went from 12.2 s to 2.7 s (~800 MB/s) with an identical SHA-256, and memory stayed constant. Files under 4 MiB keep the single-threaded path because thread setup costs more than it saves there.
+
