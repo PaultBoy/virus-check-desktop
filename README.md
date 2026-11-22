@@ -82,7 +82,8 @@ additional terms or conditions.
 
 | File | Time | Notes |
 | --- | --- | --- |
-| 2 GiB, header only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
+| 2 GiB, hashing only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
+| 352 KiB, with ClamAV | 6.6 s | signature database is loaded per `clamscan` process; a managed `clamd` is the fix (T3b) |
 
 Files above 4 MiB hash each algorithm on its own thread over shared read-only
 chunks; smaller files stay on the single-threaded path, where thread setup would
