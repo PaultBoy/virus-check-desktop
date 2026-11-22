@@ -28,6 +28,8 @@ vcd scan .\invoice.pdf
   budget; a large native image with no imports is flagged.
 - Runs ClamAV when `clamscan` is available, parses its `FOUND` signatures, and
   reports a file above ClamAV's 2 GiB cap as unscanned rather than clean.
+- Runs Microsoft Defender's command line scanner with `-DisableRemediation`, so
+  a scan never quarantines or deletes the user's files.
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
@@ -56,9 +58,10 @@ The CLI lands in `target/release/vcd.exe`.
 - ClamAV loads its signature database on every `clamscan` invocation: about
   6.6 s per file. A managed `clamd` pays off only when one process scans several
   files, so it is paired with the UI or with directory scanning.
-- There is no Defender engine. `MpCmdRun`'s custom scan returns "no threats" in
-  ~30 ms for 100 MB of random data without reading it; Windows Defender already
-  scans files on write, so the marginal value would be low anyway.
+- A clean Defender answer may come from its scan cache (real-time protection
+  already read the file when it was written), and paths listed in Defender's
+  exclusions are invisible to us without administrator rights. The engine
+  reports that caveat with every result.
 
 ## Design rule
 
@@ -93,6 +96,7 @@ additional terms or conditions.
 | --- | --- | --- |
 | 2 GiB, hashing only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
 | 352 KiB, with ClamAV | 6.6 s | signature database is loaded per `clamscan` process; a managed `clamd` is the fix (T3b) |
+| EICAR inside a zip | 0.07 s | Defender detection path: exit 2 and the signature name |
 
 Files above 4 MiB hash each algorithm on its own thread over shared read-only
 chunks; smaller files stay on the single-threaded path, where thread setup would

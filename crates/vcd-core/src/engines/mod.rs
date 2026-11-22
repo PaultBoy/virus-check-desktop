@@ -6,6 +6,7 @@
 
 pub mod clamav;
 pub mod content;
+pub mod defender;
 pub mod pe_structure;
 
 use std::path::Path;
@@ -15,6 +16,7 @@ use crate::report::EngineReport;
 
 pub use clamav::ClamAvEngine;
 pub use content::ContentTypeEngine;
+pub use defender::DefenderEngine;
 pub use pe_structure::PeStructureEngine;
 
 /// Everything an engine may look at. `header` is read once by the scanner, so

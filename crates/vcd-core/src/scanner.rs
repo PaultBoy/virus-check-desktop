@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::engines::{
-    ClamAvEngine, ContentTypeEngine, Engine, PeStructureEngine, ScanTarget,
+    ClamAvEngine, ContentTypeEngine, DefenderEngine, Engine, PeStructureEngine, ScanTarget,
 };
 use crate::filetype::{HEADER_BYTES, detect, extension_of};
 use crate::hashing::hash_file;
@@ -49,6 +49,7 @@ impl Scanner {
         Self::new(vec![
             Box::new(ContentTypeEngine),
             Box::new(PeStructureEngine),
+            Box::new(DefenderEngine::discover()),
             Box::new(ClamAvEngine::discover()),
         ])
     }
