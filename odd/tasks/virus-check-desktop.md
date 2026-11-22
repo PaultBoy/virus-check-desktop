@@ -36,7 +36,7 @@ S5. Honest verdicts
 - T2a PE header structure: section table, entry point bounds, W+X sections, CLR flag. S2. inline. done → b1fa47f
 - T2b PE body facts: per-section entropy, import table, packer hints (bounded reads), structured facts. S2. inline. done → 44a8798
 - T2c container recursion: ZIP/7z/gzip extraction with depth and byte limits, re-entering the pipeline. S1, S2. inline.
-- T3 ClamAV engine: local `clamscan`, `FOUND` parsing, 2 GiB cap reported as Partial{0}, timeout and process boundary. S1, S5. inline. done
+- T3 ClamAV engine: local `clamscan`, `FOUND` parsing, 2 GiB cap reported as Partial{0}, timeout and process boundary. S1, S5. inline. done → 165fb40
 - T4 Defender engine: `MpCmdRun.exe -Scan -ScanType 3 -File`, threat parsing. S5. inline.
 - T5 YARA engine: YARA-X `yr` CLI, compiled rules, chunked scanning with overlap for oversized files. S1, S2. inline.
 - T6 sandbox: `.wsb` generation, mapped read-only payload, PowerShell telemetry (process tree via WMI, TCP connections, DNS cache, file/registry diffs), result JSON back to host, timeout + teardown. S2. inline.
