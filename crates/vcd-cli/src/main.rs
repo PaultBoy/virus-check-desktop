@@ -9,8 +9,7 @@ use std::time::{Duration, Instant};
 
 use vcd_core::{
     Backend, Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus,
-    ScanReport, ScanScope, Scanner, Verdict, detect_support, detonate_with,
-    enable_windows_sandbox,
+    ScanReport, ScanScope, Scanner, Verdict, detect_support, detonate_with, enable_windows_sandbox,
 };
 
 fn main() -> ExitCode {
@@ -213,9 +212,9 @@ fn print_detonation(report: &Detonation) {
     );
 
     match (&report.unsupported, report.executed) {
-        (Some(extension), _) => println!(
-            "Executed   no: {extension} is not a type Windows can run"
-        ),
+        (Some(extension), _) => {
+            println!("Executed   no: {extension} is not a type Windows can run")
+        }
         (None, true) => println!("Executed   yes"),
         (None, false) => println!("Executed   no"),
     }
@@ -292,7 +291,8 @@ fn print_detonation(report: &Detonation) {
     }
 }
 
-fn scan_command(args: &[String]) -> ExitCode {    let Some(path) = args.first() else {
+fn scan_command(args: &[String]) -> ExitCode {
+    let Some(path) = args.first() else {
         eprintln!("error: scan needs a path");
         return ExitCode::from(2);
     };
@@ -511,7 +511,10 @@ fn coverage_label(coverage: &Coverage) -> String {
         Coverage::Partial {
             scanned_bytes,
             reason,
-        } => format!("coverage: {} scanned ({reason})", human_size(*scanned_bytes)),
+        } => format!(
+            "coverage: {} scanned ({reason})",
+            human_size(*scanned_bytes)
+        ),
         Coverage::None { reason } => format!("coverage: none ({reason})"),
     }
 }

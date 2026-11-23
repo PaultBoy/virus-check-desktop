@@ -25,10 +25,7 @@ impl ImportSummary {
     }
 }
 
-pub fn read_imports<R: Read + Seek>(
-    reader: &mut R,
-    image: &PeImage,
-) -> io::Result<ImportSummary> {
+pub fn read_imports<R: Read + Seek>(reader: &mut R, image: &PeImage) -> io::Result<ImportSummary> {
     let Some(&(rva, _size)) = image.data_directories.get(IMPORT_DIRECTORY) else {
         return Ok(ImportSummary::default());
     };
@@ -43,7 +40,10 @@ pub fn read_imports<R: Read + Seek>(
     let mut summary = ImportSummary::default();
     let mut saw_terminator = false;
 
-    for entry in table.chunks_exact(20) {
+    for entry in table.chunks(20) {
+        if entry.len() < 20 {
+            break;
+        }
         if entry.iter().all(|byte| *byte == 0) {
             saw_terminator = true;
             break;

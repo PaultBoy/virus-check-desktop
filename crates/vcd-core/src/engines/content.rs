@@ -32,35 +32,35 @@ impl Engine for ContentTypeEngine {
         let file_name = target.path.file_name().and_then(|name| name.to_str());
         let mut detections = Vec::new();
 
-        if let Some(name) = file_name {
-            if let Some(detection) = double_extension(name) {
-                detections.push(detection);
-            }
+        if let Some(name) = file_name
+            && let Some(detection) = double_extension(name)
+        {
+            detections.push(detection);
         }
 
-        if let Some(extension) = extension_of(file_name) {
-            if let Some(expected) = expected_family(extension) {
-                let detected = target.content_type.family();
-                if !compatible(expected, detected) {
-                    // Executable content behind a data extension is the
-                    // dangerous direction; the reverse is usually a container
-                    // that lost its refinement, so it stays informational.
-                    let severity = if detected == Family::Executable {
-                        Severity::Suspicious
-                    } else {
-                        Severity::Info
-                    };
-                    detections.push(Detection {
-                        name: "extension-mismatch".to_string(),
-                        severity,
-                        detail: format!(
-                            "extension .{} expects {} content, but the file is {}",
-                            extension.to_ascii_lowercase(),
-                            expected.as_str(),
-                            target.content_type.as_str()
-                        ),
-                    });
-                }
+        if let Some(extension) = extension_of(file_name)
+            && let Some(expected) = expected_family(extension)
+        {
+            let detected = target.content_type.family();
+            if !compatible(expected, detected) {
+                // Executable content behind a data extension is the
+                // dangerous direction; the reverse is usually a container
+                // that lost its refinement, so it stays informational.
+                let severity = if detected == Family::Executable {
+                    Severity::Suspicious
+                } else {
+                    Severity::Info
+                };
+                detections.push(Detection {
+                    name: "extension-mismatch".to_string(),
+                    severity,
+                    detail: format!(
+                        "extension .{} expects {} content, but the file is {}",
+                        extension.to_ascii_lowercase(),
+                        expected.as_str(),
+                        target.content_type.as_str()
+                    ),
+                });
             }
         }
 

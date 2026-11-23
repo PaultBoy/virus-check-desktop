@@ -28,7 +28,10 @@ pub use capabilities::{Backend, Edition, SandboxSupport, detect_support, enable_
 
 const RUN_SCRIPT: &str = include_str!("sandbox/run.ps1");
 const SANDBOX_DESKTOP: &str = r"C:\Users\WDAGUtilityAccount\Desktop";
-const SESSION_IMAGES: [&str; 2] = ["WindowsSandboxRemoteSession.exe", "WindowsSandboxServer.exe"];
+const SESSION_IMAGES: [&str; 2] = [
+    "WindowsSandboxRemoteSession.exe",
+    "WindowsSandboxServer.exe",
+];
 
 #[derive(Debug, Clone)]
 pub struct DetonateOptions {
@@ -79,7 +82,7 @@ pub struct SandboxConnection {
     pub state: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SandboxReport {
     #[serde(default)]
     pub(crate) executed: bool,
@@ -103,24 +106,6 @@ pub(crate) struct SandboxReport {
     pub(crate) files_modified: Vec<String>,
     #[serde(default)]
     pub(crate) registry_changed: Vec<String>,
-}
-
-impl Default for SandboxReport {
-    fn default() -> Self {
-        Self {
-            executed: false,
-            unsupported: None,
-            error: None,
-            finished: false,
-            sample: None,
-            processes: Vec::new(),
-            connections: Vec::new(),
-            dns: Vec::new(),
-            files_created: Vec::new(),
-            files_modified: Vec::new(),
-            registry_changed: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,10 +154,7 @@ pub fn detonate_with(
     }
 }
 
-fn detonate_windows(
-    sample: &Path,
-    options: &DetonateOptions,
-) -> Result<Detonation, SandboxError> {
+fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonation, SandboxError> {
     if !sample.is_file() {
         return Err(SandboxError::Io(io::Error::new(
             io::ErrorKind::NotFound,
@@ -192,7 +174,10 @@ fn detonate_windows(
         .and_then(|name| name.to_str())
         .unwrap_or("sample.bin");
     fs::copy(sample, payload.join(sanitize(name)))?;
-    fs::write(out.join("duration.txt"), options.duration.as_secs().to_string())?;
+    fs::write(
+        out.join("duration.txt"),
+        options.duration.as_secs().to_string(),
+    )?;
     fs::write(out.join("run.ps1"), RUN_SCRIPT)?;
 
     let wsb = workspace.join("detonation.wsb");
@@ -232,14 +217,16 @@ fn detonate_windows(
 
     let mut caveats = vec![format!(
         "networking {}",
-        if options.network { "enabled" } else { "disabled" }
+        if options.network {
+            "enabled"
+        } else {
+            "disabled"
+        }
     )];
     caveats.push(
         "telemetry is written from inside the sandbox; a sample that targets the harness can tamper with it".to_string(),
     );
-    caveats.push(
-        "no observed behaviour is not proof of benign behaviour".to_string(),
-    );
+    caveats.push("no observed behaviour is not proof of benign behaviour".to_string());
     if timed_out {
         caveats.push(format!(
             "the sandbox was stopped after {} s without a final report",
@@ -373,9 +360,10 @@ fn wait_for_session(known: &[(String, u32)]) -> Result<(), SandboxError> {
 /// session leaves `WindowsSandboxServer` and the VM behind.
 fn stop_new_sessions(known: &[(String, u32)]) {
     for (name, pid) in sandbox_processes() {
-        if known.iter().any(|(known_name, known_pid)| {
-            *known_name == name && *known_pid == pid
-        }) {
+        if known
+            .iter()
+            .any(|(known_name, known_pid)| *known_name == name && *known_pid == pid)
+        {
             continue;
         }
         let _ = Command::new("taskkill")
@@ -385,7 +373,10 @@ fn stop_new_sessions(known: &[(String, u32)]) {
 }
 
 fn sandbox_processes() -> Vec<(String, u32)> {
-    let Ok(output) = Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output() else {
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
+        .output()
+    else {
         return Vec::new();
     };
 
@@ -454,4 +445,3 @@ mod tests {
         assert!(matches!(error, SandboxError::Io(_)));
     }
 }
-

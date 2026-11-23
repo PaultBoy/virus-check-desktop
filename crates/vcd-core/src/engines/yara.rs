@@ -127,8 +127,13 @@ impl Engine for YaraEngine {
             facts.push(Fact::new("skipped rules", shown.join("; ")));
         }
 
-        EngineReport::completed(self.name(), detections, Coverage::Complete, started.elapsed())
-            .with_facts(facts)
+        EngineReport::completed(
+            self.name(),
+            detections,
+            Coverage::Complete,
+            started.elapsed(),
+        )
+        .with_facts(facts)
     }
 }
 
@@ -204,8 +209,7 @@ mod tests {
     use crate::report::EngineStatus;
     use crate::test_support::TempFile;
 
-    const EICAR: &str =
-        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+    const EICAR: &str = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
 
     fn scan_bytes(name: &str, bytes: &[u8]) -> EngineReport {
         let file = TempFile::new(name, bytes);

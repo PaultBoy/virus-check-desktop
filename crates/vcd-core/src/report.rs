@@ -93,10 +93,16 @@ pub enum EngineStatus {
     Completed,
     /// The engine is installed-but-broken or not reachable; `hint` tells the
     /// user how to make it available.
-    Unavailable { hint: String },
-    Failed { error: String },
+    Unavailable {
+        hint: String,
+    },
+    Failed {
+        error: String,
+    },
     /// The engine does not apply to this target type; `reason` says why.
-    Skipped { reason: String },
+    Skipped {
+        reason: String,
+    },
 }
 
 impl EngineStatus {
@@ -146,9 +152,7 @@ impl EngineReport {
     pub fn unavailable(engine: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
             engine: engine.into(),
-            status: EngineStatus::Unavailable {
-                hint: hint.into(),
-            },
+            status: EngineStatus::Unavailable { hint: hint.into() },
             detections: Vec::new(),
             facts: Vec::new(),
             coverage: Coverage::None {

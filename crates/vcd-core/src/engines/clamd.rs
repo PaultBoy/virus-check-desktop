@@ -59,7 +59,9 @@ fn find_binary(name: &str, install: &Path) -> Option<PathBuf> {
 fn find_database(install: &Path) -> Option<PathBuf> {
     [install.join("database"), PathBuf::from(r"C:\ClamAV\db")]
         .into_iter()
-        .find(|directory| directory.join("daily.cvd").is_file() || directory.join("daily.cld").is_file())
+        .find(|directory| {
+            directory.join("daily.cvd").is_file() || directory.join("daily.cld").is_file()
+        })
 }
 
 pub(crate) struct ClamDaemon {
@@ -75,7 +77,8 @@ impl ClamDaemon {
     /// Start a daemon, or adopt one already listening on the configured port.
     pub fn start(daemon: &Path, database: &Path) -> Result<Self, String> {
         let work_dir = work_dir();
-        fs::create_dir_all(&work_dir).map_err(|error| format!("cannot create {work_dir:?}: {error}"))?;
+        fs::create_dir_all(&work_dir)
+            .map_err(|error| format!("cannot create {work_dir:?}: {error}"))?;
 
         let config = work_dir.join("clamd.conf");
         let marker = work_dir.join("owner.pid");
@@ -97,7 +100,9 @@ impl ClamDaemon {
 
         let log = work_dir.join("clamd.log");
         let sink = fs::File::create(&log).map_err(|error| format!("cannot create log: {error}"))?;
-        let stderr = sink.try_clone().map_err(|error| format!("cannot clone log: {error}"))?;
+        let stderr = sink
+            .try_clone()
+            .map_err(|error| format!("cannot clone log: {error}"))?;
 
         let mut child = Command::new(daemon)
             .arg("-c")
@@ -121,10 +126,7 @@ impl ClamDaemon {
 
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    return Err(format!(
-                        "clamd exited with {status}: {}",
-                        log_tail(&log)
-                    ));
+                    return Err(format!("clamd exited with {status}: {}", log_tail(&log)));
                 }
                 Ok(None) if Instant::now() >= deadline => {
                     let _ = child.kill();
@@ -196,7 +198,8 @@ fn write_config(config: &Path, database: &Path, work_dir: &Path) -> Result<(), S
     let pid = work_dir.join("clamd.pid");
     let temp = std::env::temp_dir();
 
-    let mut file = fs::File::create(config).map_err(|error| format!("cannot write config: {error}"))?;
+    let mut file =
+        fs::File::create(config).map_err(|error| format!("cannot write config: {error}"))?;
     let contents = format!(
         "\
 DatabaseDirectory \"{}\"
@@ -228,8 +231,8 @@ fn log_tail(log: &Path) -> String {
     fs::read_to_string(log)
         .map(|text| {
             text.lines()
-                .filter(|line| !line.trim().is_empty())
-                .next_back()
+                .map(str::trim)
+                .rfind(|line| !line.is_empty())
                 .unwrap_or("no log output")
                 .to_string()
         })

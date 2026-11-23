@@ -29,7 +29,10 @@ const HINT: &str = "ClamAV not found: install it and put clamscan.exe on PATH \
 enum Mode {
     Unavailable(String),
     /// Managed daemon plus the `clamdscan` client that talks to it.
-    Daemon { daemon: ClamDaemon, client: PathBuf },
+    Daemon {
+        daemon: ClamDaemon,
+        client: PathBuf,
+    },
     Clamscan(PathBuf),
 }
 
@@ -51,9 +54,7 @@ impl ClamAvEngine {
 
         let mut note = None;
 
-        if use_daemon
-            && let (Some(daemon), Some(database)) = (paths.daemon, paths.database)
-        {
+        if use_daemon && let (Some(daemon), Some(database)) = (paths.daemon, paths.database) {
             let client = scan.with_file_name("clamdscan.exe");
             if client.is_file() {
                 match ClamDaemon::start(&daemon, &database) {
@@ -94,9 +95,10 @@ impl Engine for ClamAvEngine {
     fn scan(&self, target: &ScanTarget<'_>) -> EngineReport {
         let (program, prefix) = match &self.mode {
             Mode::Unavailable(hint) => return EngineReport::unavailable(self.name(), hint.clone()),
-            Mode::Daemon { daemon, client } => {
-                (client.as_path(), vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()])
-            }
+            Mode::Daemon { daemon, client } => (
+                client.as_path(),
+                vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()],
+            ),
             Mode::Clamscan(path) => (path.as_path(), Vec::new()),
         };
 

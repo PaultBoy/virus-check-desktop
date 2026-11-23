@@ -84,9 +84,7 @@ impl PeImage {
         self.sections
             .iter()
             .find(|section| section.contains(rva))
-            .map(|section| {
-                section.raw_pointer as u64 + (rva - section.virtual_address) as u64
-            })
+            .map(|section| section.raw_pointer as u64 + (rva - section.virtual_address) as u64)
     }
 
     pub fn parse(data: &[u8]) -> Option<PeImage> {
@@ -200,7 +198,10 @@ fn decode_name(raw: &[u8]) -> String {
 
 fn is_printable_name(raw: &[u8]) -> bool {
     let length = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
-    length > 0 && raw[..length].iter().all(|byte| (0x20..=0x7E).contains(byte))
+    length > 0
+        && raw[..length]
+            .iter()
+            .all(|byte| (0x20..=0x7E).contains(byte))
 }
 
 fn u16_at(data: &[u8], offset: usize) -> Option<u16> {
@@ -229,7 +230,12 @@ pub(crate) mod tests {
 
     /// Minimal but structurally valid PE32 image: DOS header, PE signature, one
     /// section, and the optional-header fields the parser reads.
-    pub(crate) fn minimal_pe(entry_point: u32, dll: bool, writable_executable: bool, dotnet: bool) -> Vec<u8> {
+    pub(crate) fn minimal_pe(
+        entry_point: u32,
+        dll: bool,
+        writable_executable: bool,
+        dotnet: bool,
+    ) -> Vec<u8> {
         let mut data = vec![0u8; 0x400];
         data[0..2].copy_from_slice(b"MZ");
         data[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -268,10 +274,7 @@ pub(crate) mod tests {
 
     /// A valid PE whose single section carries `len` bytes produced by `fill`,
     /// used to exercise the sampled-body analysis.
-    pub(crate) fn minimal_pe_with_section_body(
-        len: usize,
-        fill: impl Fn(usize) -> u8,
-    ) -> Vec<u8> {
+    pub(crate) fn minimal_pe_with_section_body(len: usize, fill: impl Fn(usize) -> u8) -> Vec<u8> {
         let mut data = minimal_pe(0x1000, false, false, false);
         data.resize(0x400 + len, 0);
         data[SECTION_TABLE + 8..SECTION_TABLE + 12].copy_from_slice(&(len as u32).to_le_bytes());
@@ -312,8 +315,16 @@ pub(crate) mod tests {
 
     #[test]
     fn detects_the_clr_directory() {
-        assert!(PeImage::parse(&minimal_pe(0x1000, false, false, true)).expect("parse").is_dotnet);
-        assert!(!PeImage::parse(&minimal_pe(0x1000, false, false, false)).expect("parse").is_dotnet);
+        assert!(
+            PeImage::parse(&minimal_pe(0x1000, false, false, true))
+                .expect("parse")
+                .is_dotnet
+        );
+        assert!(
+            !PeImage::parse(&minimal_pe(0x1000, false, false, false))
+                .expect("parse")
+                .is_dotnet
+        );
     }
 
     #[test]

@@ -108,7 +108,12 @@ mod tests {
     fn detections_win_over_gaps() {
         let engines = [
             report(Coverage::Complete, vec![detection(Severity::Malicious)]),
-            report(Coverage::None { reason: "skipped".into() }, vec![]),
+            report(
+                Coverage::None {
+                    reason: "skipped".into(),
+                },
+                vec![],
+            ),
         ];
         assert_eq!(aggregate(&engines), Verdict::Malicious);
     }
@@ -132,10 +137,7 @@ mod tests {
             reason: "engine cap".into(),
         };
         assert!(!zero.inspected());
-        assert_eq!(
-            aggregate(&[report(zero, vec![])]),
-            Verdict::Unknown,
-        );
+        assert_eq!(aggregate(&[report(zero, vec![])]), Verdict::Unknown,);
         assert_eq!(
             aggregate(&[
                 report(Coverage::Complete, vec![]),
@@ -159,7 +161,12 @@ mod tests {
 
     #[test]
     fn completed_engine_that_inspected_nothing_is_unknown() {
-        let engines = [report(Coverage::None { reason: "nope".into() }, vec![])];
+        let engines = [report(
+            Coverage::None {
+                reason: "nope".into(),
+            },
+            vec![],
+        )];
         assert_eq!(aggregate(&engines), Verdict::Unknown);
         assert_eq!(aggregate(&[]), Verdict::Unknown);
     }

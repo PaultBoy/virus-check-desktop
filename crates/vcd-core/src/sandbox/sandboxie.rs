@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use super::{
-    Backend, DetonateOptions, Detonation, SandboxError, read_report, workspace_dir,
-};
+use super::{Backend, DetonateOptions, Detonation, SandboxError, read_report, workspace_dir};
 
 const WATCH_SCRIPT: &str = include_str!("sandboxie_watch.ps1");
 pub(crate) const BOX: &str = "VCDDetonate";
@@ -127,11 +125,18 @@ pub(crate) fn detonate(
         "Sandboxie shares the Windows kernel: it is a sandbox, not a virtual machine".to_string(),
         format!(
             "network {} for the sandbox (AllowNetworkAccess)",
-            if options.network { "allowed" } else { "blocked" }
+            if options.network {
+                "allowed"
+            } else {
+                "blocked"
+            }
         ),
         "registry writes are virtualized into the box's RegHive and are not decoded".to_string(),
         "processes are sampled by polling: very short-lived ones can be missed".to_string(),
-        format!("the box is kept at {} until it is deleted", paths.box_root.display()),
+        format!(
+            "the box is kept at {} until it is deleted",
+            paths.box_root.display()
+        ),
     ];
     if report.processes.is_empty() {
         caveats.push(

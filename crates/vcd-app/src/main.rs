@@ -94,7 +94,8 @@ impl App {
             notice: None,
             smoke_detonate,
             smoke_backend,
-            smoke_deadline: smoke.then(|| std::time::Instant::now() + Duration::from_secs(smoke_seconds)),
+            smoke_deadline: smoke
+                .then(|| std::time::Instant::now() + Duration::from_secs(smoke_seconds)),
         };
 
         // Smoke hook: scan a path on startup so the window can be captured with
@@ -217,11 +218,8 @@ impl App {
         let path = self.files[index].target.clone();
         self.detonation = None;
         self.detonating = true;
-        self.worker.send(Command::Detonate(
-            path,
-            DetonateOptions::default(),
-            backend,
-        ));
+        self.worker
+            .send(Command::Detonate(path, DetonateOptions::default(), backend));
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -246,7 +244,8 @@ impl App {
                 self.start_folder(path);
             }
 
-            if matches!(self.phase, Phase::Starting | Phase::Scanning) && ui.button("Cancel").clicked()
+            if matches!(self.phase, Phase::Starting | Phase::Scanning)
+                && ui.button("Cancel").clicked()
             {
                 self.worker.cancel();
             }
@@ -330,7 +329,11 @@ impl App {
         if self.files.is_empty() && self.errors.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(90.0);
-                ui.label(RichText::new("Drop a file or a folder here").size(22.0).weak());
+                ui.label(
+                    RichText::new("Drop a file or a folder here")
+                        .size(22.0)
+                        .weak(),
+                );
                 ui.label(RichText::new("or use the buttons above").weak());
             });
             return;
@@ -452,21 +455,15 @@ impl App {
                         ui.label(RichText::new(engine.status.as_str()).weak());
                         ui.label(RichText::new(coverage_text(&engine.coverage)).weak());
                         if engine.duration_ms > 0 {
-                            ui.label(
-                                RichText::new(format!("{} ms", engine.duration_ms)).weak(),
-                            );
+                            ui.label(RichText::new(format!("{} ms", engine.duration_ms)).weak());
                         }
                     });
 
                     for fact in &engine.facts {
                         ui.label(
-                            RichText::new(format!(
-                                "{}: {}",
-                                fact.name,
-                                shorten(&fact.value, 160)
-                            ))
-                            .monospace()
-                            .weak(),
+                            RichText::new(format!("{}: {}", fact.name, shorten(&fact.value, 160)))
+                                .monospace()
+                                .weak(),
                         );
                     }
 
@@ -615,7 +612,8 @@ fn detonable(file: &ScanReport) -> bool {
     matches!(
         file.extension.as_deref(),
         Some(
-            "exe" | "scr"
+            "exe"
+                | "scr"
                 | "com"
                 | "pif"
                 | "cpl"
@@ -694,7 +692,10 @@ fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
     }
 
     if !detonation.files_created.is_empty() {
-        ui.label(format!("files created ({})", detonation.files_created.len()));
+        ui.label(format!(
+            "files created ({})",
+            detonation.files_created.len()
+        ));
         for path in detonation.files_created.iter().take(8) {
             ui.label(RichText::new(format!("  + {path}")).monospace().weak());
         }
@@ -722,13 +723,12 @@ fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
     }
 
     for caveat in &detonation.caveats {
-        ui.label(
-            RichText::new(format!("! {caveat}")).color(Color32::from_rgb(200, 190, 90)),
-        );
+        ui.label(RichText::new(format!("! {caveat}")).color(Color32::from_rgb(200, 190, 90)));
     }
 }
 
-fn findings(file: &ScanReport) -> String {    let mut parts = Vec::new();
+fn findings(file: &ScanReport) -> String {
+    let mut parts = Vec::new();
     for engine in &file.engines {
         for detection in &engine.detections {
             parts.push(format!("{}: {}", engine.engine, detection.detail));

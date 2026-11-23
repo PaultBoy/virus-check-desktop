@@ -276,20 +276,14 @@ mod tests {
 
     #[test]
     fn flags_writable_executable_section_as_info_only() {
-        let report = scan(
-            &minimal_pe(0x1000, false, true, false),
-            ContentType::Pe,
-        );
+        let report = scan(&minimal_pe(0x1000, false, true, false), ContentType::Pe);
         assert_eq!(names(&report), vec!["pe-wx-section"]);
         assert_eq!(report.detections[0].severity, Severity::Info);
     }
 
     #[test]
     fn reports_entry_point_outside_sections_as_suspicious() {
-        let report = scan(
-            &minimal_pe(0x9000, false, false, false),
-            ContentType::Pe,
-        );
+        let report = scan(&minimal_pe(0x9000, false, false, false), ContentType::Pe);
         assert_eq!(names(&report), vec!["pe-entrypoint-outside-sections"]);
         assert_eq!(report.detections[0].severity, Severity::Suspicious);
     }

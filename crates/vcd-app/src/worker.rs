@@ -5,14 +5,14 @@
 //! starting the daemon can take seconds and the window should appear instantly.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::Arc;
 use std::thread;
 
 use vcd_core::{
-    Backend, DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope, Scanner,
-    Summary,
+    Backend, DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope,
+    Scanner, Summary,
 };
 
 pub enum Command {
@@ -25,9 +25,14 @@ pub enum Command {
 pub enum Event {
     /// Engines are being prepared (ClamAV database, YARA rules).
     Starting,
-    Started { total: usize },
+    Started {
+        total: usize,
+    },
     File(Box<ScanReport>),
-    Error { path: PathBuf, error: String },
+    Error {
+        path: PathBuf,
+        error: String,
+    },
     Finished(Box<Summary>),
     Failed(String),
     Detonation(Box<Detonation>),
@@ -174,4 +179,3 @@ fn summary_of(report: &ScanReport) -> Summary {
 
     summary
 }
-

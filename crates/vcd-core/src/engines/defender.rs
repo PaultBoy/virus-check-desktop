@@ -32,8 +32,7 @@ const MAX_EVIDENCE_CHARS: usize = 300;
 const HINT: &str = "Microsoft Defender command line utility not found; \
      it is part of Windows, so check that Defender is enabled and not removed by policy";
 
-const CACHE_CAVEAT: &str =
-    "Defender may answer from its scan cache, and excluded paths are invisible without admin rights";
+const CACHE_CAVEAT: &str = "Defender may answer from its scan cache, and excluded paths are invisible without admin rights";
 
 pub struct DefenderEngine {
     executable: Option<PathBuf>,
@@ -137,8 +136,7 @@ fn summarize(stdout: &str) -> String {
     let line = stdout
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.chars().all(|c| c == '-'))
-        .next_back()
+        .rfind(|line| !line.is_empty() && !line.chars().all(|c| c == '-'))
         .unwrap_or("no output");
 
     if line.chars().count() <= MAX_EVIDENCE_CHARS {
@@ -209,8 +207,7 @@ fn temp_output_path() -> PathBuf {
 fn find_executable() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if let Ok(entries) = std::fs::read_dir(r"C:\ProgramData\Microsoft\Windows Defender\Platform")
-    {
+    if let Ok(entries) = std::fs::read_dir(r"C:\ProgramData\Microsoft\Windows Defender\Platform") {
         let mut directories: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())

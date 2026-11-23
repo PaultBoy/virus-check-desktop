@@ -25,7 +25,9 @@ pub enum ScanScope {
 /// What a directory scan reports as it advances, so a UI can show progress and
 /// ask to stop without the core knowing anything about it.
 pub enum ScanProgress<'a> {
-    Planned { total: usize },
+    Planned {
+        total: usize,
+    },
     File {
         report: &'a ScanReport,
         done: usize,
@@ -271,7 +273,8 @@ fn empty_report(root: &Path, elapsed: Duration) -> DirectoryReport {
     }
 }
 
-fn read_header(path: &Path) -> Result<Vec<u8>, ScanError> {    let file = File::open(path).map_err(|source| ScanError::Io {
+fn read_header(path: &Path) -> Result<Vec<u8>, ScanError> {
+    let file = File::open(path).map_err(|source| ScanError::Io {
         path: path.to_path_buf(),
         source,
     })?;

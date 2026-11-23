@@ -32,7 +32,10 @@ impl Edition {
 
     /// Windows Sandbox is only available on these editions.
     pub fn supports_windows_sandbox(self) -> bool {
-        matches!(self, Edition::Pro | Edition::Enterprise | Edition::Education)
+        matches!(
+            self,
+            Edition::Pro | Edition::Enterprise | Edition::Education
+        )
     }
 }
 

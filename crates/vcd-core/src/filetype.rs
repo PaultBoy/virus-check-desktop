@@ -197,7 +197,9 @@ pub fn detect(header: &[u8], file_name: Option<&str>) -> ContentType {
     }
     if header.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
         return if matches!(
-            extension_of(file_name).map(str::to_ascii_lowercase).as_deref(),
+            extension_of(file_name)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
             Some("msi" | "msp" | "mst" | "msix")
         ) {
             ContentType::Msi
@@ -284,7 +286,8 @@ fn is_pe(header: &[u8]) -> bool {
     if header.len() < 0x40 || !header.starts_with(b"MZ") {
         return false;
     }
-    let offset = u32::from_le_bytes([header[0x3C], header[0x3D], header[0x3E], header[0x3F]]) as usize;
+    let offset =
+        u32::from_le_bytes([header[0x3C], header[0x3D], header[0x3E], header[0x3F]]) as usize;
     offset > 0 && header.get(offset..offset.saturating_add(4)) == Some(b"PE\0\0")
 }
 
@@ -318,7 +321,7 @@ fn contains(header: &[u8], needle: &[u8]) -> bool {
 
 fn looks_like_text(header: &[u8]) -> bool {
     let sample = &header[..header.len().min(8192)];
-    if sample.iter().any(|byte| *byte == 0) {
+    if sample.contains(&0) {
         return false;
     }
     let acceptable = sample
@@ -381,9 +384,8 @@ pub fn expected_family(extension: &str) -> Option<Family> {
         "zip" | "7z" | "rar" | "gz" | "tgz" | "bz2" | "xz" | "tar" | "iso" | "jar" | "apk" => {
             Family::Archive
         }
-        "pdf" | "rtf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp" => {
-            Family::Document
-        }
+        "pdf" | "rtf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods"
+        | "odp" => Family::Document,
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" => Family::Image,
         "mp3" | "wav" | "flac" | "mp4" | "mkv" | "avi" | "mov" => Family::Media,
         "bat" | "cmd" | "ps1" | "psm1" | "vbs" | "vbe" | "js" | "jse" | "wsf" | "wsh" | "hta"
@@ -448,7 +450,10 @@ mod tests {
     #[test]
     fn refines_zip_containers() {
         assert_eq!(
-            detect(b"PK\x03\x04[Content_Types].xml .... word/document.xml", Some("a.docx")),
+            detect(
+                b"PK\x03\x04[Content_Types].xml .... word/document.xml",
+                Some("a.docx")
+            ),
             ContentType::OoxmlDocument
         );
         assert_eq!(
@@ -467,9 +472,7 @@ mod tests {
 
     #[test]
     fn ole2_is_msi_only_for_installer_extensions() {
-        let ole2 = [
-            0xD0u8, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0,
-        ];
+        let ole2 = [0xD0u8, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0];
         assert_eq!(detect(&ole2, Some("setup.msi")), ContentType::Msi);
         assert_eq!(detect(&ole2, Some("report.doc")), ContentType::Ole2Document);
     }
@@ -485,7 +488,10 @@ mod tests {
 
     #[test]
     fn binary_without_magic_is_unknown() {
-        assert_eq!(detect(&[0u8, 1, 2, 3, 0, 255, 4], None), ContentType::Unknown);
+        assert_eq!(
+            detect(&[0u8, 1, 2, 3, 0, 255, 4], None),
+            ContentType::Unknown
+        );
     }
 
     #[test]
