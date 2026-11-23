@@ -3086,6 +3086,7 @@ dependencies = [
 name = "vcd-core"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "md-5",
  "serde",
  "serde_json",

@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::report::{Coverage, Detection, EngineReport, Fact, Severity};
 
+use super::clamav_direct::ClamAvDirect;
 use super::clamd::{ClamDaemon, MAX_SCAN_BYTES, discover_paths};
 use super::{Engine, ScanTarget};
 
@@ -28,6 +29,9 @@ const HINT: &str = "ClamAV not found: install it and put clamscan.exe on PATH \
 
 enum Mode {
     Unavailable(String),
+    /// `libclamav.dll` called in process: the database loads once, scans are
+    /// function calls.
+    Direct(ClamAvDirect),
     /// Managed daemon plus the `clamdscan` client that talks to it.
     Daemon {
         daemon: ClamDaemon,
@@ -53,6 +57,18 @@ impl ClamAvEngine {
         };
 
         let mut note = None;
+
+        if use_daemon && let Some(install) = find_install(&scan) {
+            match ClamAvDirect::load(&install) {
+                Ok(direct) => {
+                    return Self {
+                        mode: Mode::Direct(direct),
+                        daemon_note: None,
+                    };
+                }
+                Err(error) => note = Some(format!("libclamav unavailable: {error}")),
+            }
+        }
 
         if use_daemon && let (Some(daemon), Some(database)) = (paths.daemon, paths.database) {
             let client = scan.with_file_name("clamdscan.exe");
@@ -93,15 +109,6 @@ impl Engine for ClamAvEngine {
     }
 
     fn scan(&self, target: &ScanTarget<'_>) -> EngineReport {
-        let (program, prefix) = match &self.mode {
-            Mode::Unavailable(hint) => return EngineReport::unavailable(self.name(), hint.clone()),
-            Mode::Daemon { daemon, client } => (
-                client.as_path(),
-                vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()],
-            ),
-            Mode::Clamscan(path) => (path.as_path(), Vec::new()),
-        };
-
         let started = Instant::now();
 
         if target.size > MAX_SCAN_BYTES {
@@ -119,6 +126,54 @@ impl Engine for ClamAvEngine {
                 "file exceeds ClamAV's per-file cap; no signature check was performed",
             )]);
         }
+
+        if let Mode::Direct(direct) = &self.mode {
+            return match direct.scan(target.path) {
+                Ok((names, scanned)) => {
+                    let detections: Vec<Detection> = names
+                        .into_iter()
+                        .map(|name| Detection {
+                            name: "clamav-signature".to_string(),
+                            severity: Severity::Malicious,
+                            detail: name,
+                        })
+                        .collect();
+
+                    let coverage = if scanned == 0 && target.size > 0 {
+                        Coverage::Partial {
+                            scanned_bytes: 0,
+                            reason: "libclamav inspected no bytes".to_string(),
+                        }
+                    } else {
+                        Coverage::Complete
+                    };
+
+                    EngineReport::completed(self.name(), detections, coverage, started.elapsed())
+                        .with_facts(vec![
+                            Fact::new("mode", "libclamav (in-process)"),
+                            Fact::new(
+                                "engine",
+                                format!(
+                                    "ClamAV {}, {} signatures",
+                                    direct.version(),
+                                    direct.signatures()
+                                ),
+                            ),
+                        ])
+                }
+                Err(error) => EngineReport::failed(self.name(), error),
+            };
+        }
+
+        let (program, prefix) = match &self.mode {
+            Mode::Unavailable(hint) => return EngineReport::unavailable(self.name(), hint.clone()),
+            Mode::Direct(_) => unreachable!("handled above"),
+            Mode::Daemon { daemon, client } => (
+                client.as_path(),
+                vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()],
+            ),
+            Mode::Clamscan(path) => (path.as_path(), Vec::new()),
+        };
 
         let output_path = temp_output_path();
         let outcome = run_scan(program, &prefix, target.path, &output_path);
@@ -169,6 +224,19 @@ impl Engine for ClamAvEngine {
         )
         .with_facts(facts)
     }
+}
+
+fn find_install(scan: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = scan.parent() {
+        candidates.push(parent.to_path_buf());
+    }
+    candidates.push(PathBuf::from(r"C:\Program Files\ClamAV"));
+    candidates.push(PathBuf::from(r"C:\ClamAV"));
+
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.join("libclamav.dll").is_file())
 }
 
 /// `path: Signature.Name FOUND` -> one malicious detection per signature.

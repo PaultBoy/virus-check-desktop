@@ -1,7 +1,6 @@
 //! YARA-X engine.
 //!
-//! In-process pattern matching: `yara-x` is VirusTotal's Rust reimplementation
-//! of YARA, so there is no binary to spawn and no signature database to load.
+//! In-process pattern matching: `yara-x` is a Rust implementation of YARA, so there is no binary to spawn and no signature database to load.
 //! Rules come from two places, compiled once per process:
 //!
 //! - the rules embedded in this binary (they must always compile);

@@ -3,9 +3,6 @@
 Local malware triage for Windows. Files are analyzed on your machine: nothing is
 uploaded, and the tool imposes no size cap of its own.
 
-> Not affiliated with VirusTotal. This is not a clone of it: it runs local
-> engines and reports what each one actually inspected.
-
 ## Install
 
 Download the latest release from GitHub releases and run it; there is no runtime
@@ -40,8 +37,10 @@ vcd scan .\samples\        # whole tree, one ClamAV database load for all files
   sections, section count, managed assemblies.
 - Reads the import table and samples section bodies for entropy, within a fixed
   budget; a large native image with no imports is flagged.
-- Runs ClamAV when `clamscan` is available, parses its `FOUND` signatures, and
-  reports a file above ClamAV's 2 GiB cap as unscanned rather than clean.
+- Runs ClamAV in process through `libclamav.dll` for directory scans (the
+  database loads once, ~3.6 M signatures, every file after that is a function
+  call) and through `clamscan` for a single file. Reports a file above ClamAV's
+  2 GiB cap as unscanned rather than clean.
 - Runs Microsoft Defender's command line scanner with `-DisableRemediation`, so
   a scan never quarantines or deletes the user's files.
 - Matches YARA rules in process through YARA-X: two built-in rules (EICAR and
@@ -78,8 +77,9 @@ The CLI lands in `target/release/vcd.exe`.
 ## Known limitations
 
 - A single-file scan still pays one `clamscan` startup (~6.6 s): starting a
-  daemon for one file costs the same or more. Directory scans use a managed
-  `clamd` and load the database once.
+  daemon or loading the library for one file costs the same or more. Directory
+  scans load ClamAV's database once into the process (~7 s, ~300 MB resident)
+  and then scan each file in milliseconds.
 - A clean Defender answer may come from its scan cache (real-time protection
   already read the file when it was written), and paths listed in Defender's
   exclusions are invisible to us without administrator rights. The engine
@@ -132,8 +132,7 @@ workspace (its path is reported) when you are done with the samples.
 
 - `crates/vcd-core` — streaming hashes, content typing, PE and import analysis,
   the engines (content-type, pe-structure, defender, yara, clamav), the
-  coverage/verdict model, directory scanning and both detonation backends.
-- `crates/vcd-cli` — `vcd`: `scan`, `detonate`, `sandbox`.
+  coverage/verdict model, directory scanning and both detonation backends.- `crates/vcd-cli` — `vcd`: `scan`, `detonate`, `sandbox`.
 - `crates/vcd-app` — the egui desktop shell. A worker thread owns the scanner so
   the ClamAV daemon stays warm and the window never blocks.
 
@@ -155,14 +154,15 @@ inspected at all).
 
 ## License
 
-Dual-licensed under either of
+GNU General Public License, version 2 or (at your option) any later version.
+See [LICENSE](LICENSE).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-at your option. Unless you state otherwise, any contribution you intentionally
-submit for inclusion in this project shall be dual-licensed as above, without
-additional terms or conditions.
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in this project is licensed under the same terms.
 
 ## Known measurements
 
@@ -170,7 +170,7 @@ additional terms or conditions.
 | --- | --- | --- |
 | 2 GiB, hashing only | 2.7 s | MD5+SHA-1+SHA-256, three threads over one sequential read |
 | 352 KiB, with ClamAV | 6.6 s | single file: `clamscan` loads the database per process |
-| 8 files, directory tree | 8.3 s | one managed `clamd` for the whole tree |
+| Directory tree, ClamAV | ~7 s + ms per file | `libclamav` in process: one database load for the whole tree |
 | EICAR inside a zip | 0.07 s | Defender detection path: exit 2 and the signature name |
 | Any file, YARA-X | < 0.01 s | in-process pattern matching, no database to load |
 
