@@ -6,15 +6,17 @@
 //! the events that come back, so the window stays responsive while ClamAV loads
 //! its database or a tree with thousands of files is being walked.
 
+mod i18n;
 mod worker;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
+use i18n::Strings;
 use vcd_core::{
-    Backend, ClamavStatus, Coverage, DetonateOptions, Detonation, SandboxSupport, ScanReport,
-    Severity, Summary, Verdict, clamav_status, detect_support, enable_windows_sandbox,
+    Backend, ClamavStatus, Coverage, DetonateOptions, Detonation, InstallStep, SandboxSupport,
+    ScanReport, Severity, Summary, Verdict, clamav_status, detect_support, enable_windows_sandbox,
 };
 
 use worker::{Command, Event, Worker};
@@ -60,7 +62,10 @@ struct App {
     support: SandboxSupport,
     clamav: ClamavStatus,
     installing_clamav: bool,
-    clamav_progress: Option<String>,
+    clamav_progress: Option<InstallStep>,
+    clamav_error: Option<String>,
+    show_clamav_prompt: bool,
+    strings: Strings,
     notice: Option<String>,
     smoke_detonate: bool,
     smoke_backend: Option<Backend>,
@@ -107,12 +112,17 @@ impl App {
             },
             installing_clamav: false,
             clamav_progress: None,
+            clamav_error: None,
+            show_clamav_prompt: false,
+            strings: Strings::system(),
             notice: None,
             smoke_detonate,
             smoke_backend,
             smoke_deadline: smoke
                 .then(|| std::time::Instant::now() + Duration::from_secs(smoke_seconds)),
         };
+
+        app.show_clamav_prompt = !app.clamav.available();
 
         // Smoke hook: scan a path on startup so the window can be captured with
         // real results. Never set by normal use.
@@ -206,20 +216,23 @@ impl App {
                     self.detonating = false;
                     self.failure = Some(error);
                 }
-                Event::ClamavProgress(message) => {
+                Event::ClamavProgress(step) => {
                     self.installing_clamav = true;
-                    self.clamav_progress = Some(message);
+                    self.clamav_progress = Some(step);
+                    self.clamav_error = None;
                 }
                 Event::ClamavInstalled(root) => {
                     self.installing_clamav = false;
                     self.clamav_progress = None;
                     self.clamav = clamav_status();
-                    self.notice = Some(format!("ClamAV ready at {}", root.display()));
+                    self.show_clamav_prompt = false;
+                    let ready = self.strings.clamav_ready();
+                    self.notice = Some(format!("{ready} · {}", root.display()));
                 }
                 Event::ClamavFailed(error) => {
                     self.installing_clamav = false;
                     self.clamav_progress = None;
-                    self.failure = Some(error);
+                    self.clamav_error = Some(error);
                 }
             }
         }
@@ -255,6 +268,76 @@ impl App {
             .send(Command::Detonate(path, DetonateOptions::default(), backend));
     }
 
+    /// Setup prompt shown over the window when ClamAV is missing. It replaces
+    /// the old toolbar button: one decision, explained, with its cost.
+    fn clamav_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_clamav_prompt {
+            return;
+        }
+
+        let title = self.strings.clamav_dialog_title();
+        let body = self.strings.clamav_dialog_body();
+        let download = if self.clamav_error.is_some() {
+            self.strings.retry()
+        } else {
+            self.strings.download_clamav()
+        };
+        let not_now = self.strings.not_now();
+        let preparing = self.strings.preparing_clamav();
+        let installing = self.installing_clamav;
+        let step = self
+            .clamav_progress
+            .map(|step| self.strings.install_step(step));
+        let error = self.clamav_error.clone();
+        let mut download_clicked = false;
+        let mut close_clicked = false;
+
+        egui::Modal::new(egui::Id::new("clamav_prompt")).show(ctx, |ui| {
+            ui.set_max_width(470.0);
+            ui.heading(title);
+            ui.add_space(8.0);
+            ui.label(body);
+
+            if let Some(error) = &error {
+                ui.add_space(8.0);
+                ui.colored_label(malicious_color(), error);
+            }
+
+            ui.add_space(12.0);
+
+            if installing {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(step.unwrap_or(preparing));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.button(download).clicked() {
+                        download_clicked = true;
+                    }
+                    if ui.button(not_now).clicked() {
+                        close_clicked = true;
+                    }
+                });
+            }
+        });
+
+        if !installing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            close_clicked = true;
+        }
+
+        if close_clicked {
+            self.show_clamav_prompt = false;
+        }
+
+        if download_clicked {
+            self.installing_clamav = true;
+            self.clamav_progress = None;
+            self.clamav_error = None;
+            self.worker.send(Command::InstallClamav);
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -262,7 +345,7 @@ impl App {
             ui.separator();
 
             if ui
-                .add_enabled(!self.busy(), egui::Button::new("Scan file…"))
+                .add_enabled(!self.busy(), egui::Button::new(self.strings.scan_file()))
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_file()
             {
@@ -270,7 +353,7 @@ impl App {
             }
 
             if ui
-                .add_enabled(!self.busy(), egui::Button::new("Scan folder…"))
+                .add_enabled(!self.busy(), egui::Button::new(self.strings.scan_folder()))
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
@@ -278,29 +361,18 @@ impl App {
             }
 
             if matches!(self.phase, Phase::Starting | Phase::Scanning)
-                && ui.button("Cancel").clicked()
+                && ui.button(self.strings.cancel()).clicked()
             {
                 self.worker.cancel();
             }
 
-            ui.separator();
-
             if self.clamav.available() {
-                ui.label(RichText::new("ClamAV ready").weak());
-            } else if ui
-                .add_enabled(!self.busy(), egui::Button::new("Download ClamAV…"))
-                .on_hover_text(
-                    "about 500 MB, downloaded into your profile; no administrator needed",
-                )
-                .clicked()
-            {
-                self.installing_clamav = true;
-                self.clamav_progress = None;
-                self.worker.send(Command::InstallClamav);
+                ui.separator();
+                ui.label(RichText::new(self.strings.clamav_ready()).weak());
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("drop a file or folder anywhere").weak());
+                ui.label(RichText::new(self.strings.drop_hint()).weak());
             });
         });
         ui.add_space(4.0);
@@ -311,56 +383,47 @@ impl App {
         ui.horizontal(|ui| {
             if self.installing_clamav {
                 ui.spinner();
-                ui.label(
-                    self.clamav_progress
-                        .clone()
-                        .unwrap_or_else(|| "preparing ClamAV…".to_string()),
-                );
+                let step = self
+                    .clamav_progress
+                    .map(|step| self.strings.install_step(step))
+                    .unwrap_or_else(|| self.strings.preparing_clamav());
+                ui.label(step);
             } else if self.detonating {
                 ui.spinner();
-                ui.label("detonating in the sandbox (up to ~2 min)…");
+                ui.label(self.strings.detonating());
             } else {
                 match self.phase {
-                Phase::Idle => {
-                    ui.label("Ready");
-                }
-                Phase::Starting => {
-                    ui.spinner();
-                    ui.label("starting engines (the ClamAV database can take a few seconds)…");
-                }
-                Phase::Scanning => {
-                    ui.spinner();
-                    let done = self.files.len();
-                    ui.label(format!("scanned {done} / {}", self.total));
-                    let ratio = if self.total == 0 {
-                        0.0
-                    } else {
-                        done as f32 / self.total as f32
-                    };
-                    ui.add(
-                        egui::ProgressBar::new(ratio)
-                            .desired_width(220.0)
-                            .show_percentage(),
-                    );
-                }
-                Phase::Done => {
-                    if let Some(summary) = &self.finished {
-                        let elapsed = self
-                            .scan_elapsed
-                            .map(|elapsed| elapsed.as_secs_f64())
-                            .unwrap_or(summary.duration_ms as f64 / 1000.0);
-                        ui.label(format!(
-                            "{} files | {} malicious | {} suspicious | {} undetected | {} inconclusive | {} unknown | {} errors | {elapsed:.1} s",
-                            summary.files,
-                            summary.malicious,
-                            summary.suspicious,
-                            summary.undetected,
-                            summary.inconclusive,
-                            summary.unknown,
-                            summary.errors
-                        ));
+                    Phase::Idle => {
+                        ui.label(self.strings.ready());
                     }
-                }
+                    Phase::Starting => {
+                        ui.spinner();
+                        ui.label(self.strings.starting_engines());
+                    }
+                    Phase::Scanning => {
+                        ui.spinner();
+                        let done = self.files.len();
+                        ui.label(self.strings.scanned(done, self.total));
+                        let ratio = if self.total == 0 {
+                            0.0
+                        } else {
+                            done as f32 / self.total as f32
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(ratio)
+                                .desired_width(220.0)
+                                .show_percentage(),
+                        );
+                    }
+                    Phase::Done => {
+                        if let Some(summary) = &self.finished {
+                            let elapsed = self
+                                .scan_elapsed
+                                .map(|elapsed| elapsed.as_secs_f64())
+                                .unwrap_or(summary.duration_ms as f64 / 1000.0);
+                            ui.label(self.strings.summary(summary, elapsed));
+                        }
+                    }
                 }
             }
 
@@ -373,7 +436,7 @@ impl App {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("local only | nothing is uploaded").weak());
+                ui.label(RichText::new(self.strings.local_only()).weak());
             });
         });
         ui.add_space(3.0);
@@ -385,12 +448,8 @@ impl App {
         if self.files.is_empty() && self.errors.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(90.0);
-                ui.label(
-                    RichText::new("Drop a file or a folder here")
-                        .size(22.0)
-                        .weak(),
-                );
-                ui.label(RichText::new("or use the buttons above").weak());
+                ui.label(RichText::new(self.strings.drop_here()).size(22.0).weak());
+                ui.label(RichText::new(self.strings.or_buttons()).weak());
             });
             return;
         }
@@ -405,7 +464,7 @@ impl App {
                     let file = &self.files[index];
                     let line = format!(
                         "{:<12}  {:<58}  {}",
-                        file.verdict.label(),
+                        self.strings.verdict(file.verdict),
                         self.display_path(&file.target),
                         findings(file)
                     );
@@ -437,8 +496,9 @@ impl App {
 
         if !self.errors.is_empty() {
             ui.separator();
-            egui::CollapsingHeader::new(format!("{} files could not be read", self.errors.len()))
-                .show(ui, |ui| {
+            egui::CollapsingHeader::new(self.strings.unreadable(self.errors.len())).show(
+                ui,
+                |ui| {
                     for (path, error) in &self.errors {
                         ui.label(
                             RichText::new(format!("{}: {error}", path.display()))
@@ -446,7 +506,8 @@ impl App {
                                 .color(Color32::from_rgb(200, 190, 90)),
                         );
                     }
-                });
+                },
+            );
         }
     }
 
@@ -460,7 +521,7 @@ impl App {
             .show(ui, |ui| {
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(file.verdict.label())
+                    RichText::new(self.strings.verdict(file.verdict))
                         .size(22.0)
                         .strong()
                         .color(verdict_color(file.verdict)),
@@ -476,16 +537,16 @@ impl App {
                     .num_columns(2)
                     .spacing([14.0, 4.0])
                     .show(ui, |ui| {
-                        ui.label("Size");
+                        ui.label(self.strings.size());
                         ui.label(human_size(file.size));
                         ui.end_row();
 
-                        ui.label("Type");
+                        ui.label(self.strings.kind());
                         ui.label(file.content_type.as_str());
                         ui.end_row();
 
                         if let Some(extension) = &file.extension {
-                            ui.label("Extension");
+                            ui.label(self.strings.extension());
                             ui.label(format!(".{extension}"));
                             ui.end_row();
                         }
@@ -568,25 +629,22 @@ impl App {
                         });
                     }
                 } else {
-                    ui.label(
-                        RichText::new("detonation applies to executable and script types only")
-                            .weak(),
-                    );
+                    ui.label(RichText::new(self.strings.detonation_only()).weak());
                 }
 
                 if self.detonating {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("booting the sandbox, running the sample…");
+                        ui.label(self.strings.booting_sandbox());
                     });
                 }
 
                 if let Some(detonation) = &self.detonation {
-                    render_detonation(ui, detonation);
+                    render_detonation(ui, detonation, &self.strings);
                 }
 
                 ui.separator();
-                if ui.button("Copy JSON").clicked()
+                if ui.button(self.strings.copy_json()).clicked()
                     && let Ok(json) = serde_json::to_string_pretty(&file)
                 {
                     ui.ctx().copy_text(json);
@@ -650,6 +708,8 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| self.results(ui));
+
+        self.clamav_dialog(ctx);
     }
 }
 
@@ -687,38 +747,30 @@ fn detonable(file: &ScanReport) -> bool {
     )
 }
 
-fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
+fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation, strings: &Strings) {
     ui.separator();
-    ui.label(RichText::new("Sandbox detonation").strong());
-    ui.label(format!("backend: {}", detonation.backend.as_str()));
+    ui.label(RichText::new(strings.detonation_title()).strong());
     ui.label(format!(
-        "executed: {} | {:.1} s{}",
-        if detonation.executed { "yes" } else { "no" },
+        "{}: {}",
+        strings.backend(),
+        detonation.backend.as_str()
+    ));
+    ui.label(strings.executed(
+        detonation.executed,
+        detonation.timed_out,
         detonation.duration_ms as f64 / 1000.0,
-        if detonation.timed_out {
-            " | timed out, partial data"
-        } else {
-            ""
-        }
     ));
-    ui.label(format!(
-        "network: {}",
-        if detonation.network_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    ));
+    ui.label(strings.network(detonation.network_enabled));
 
     if let Some(error) = &detonation.error {
         ui.colored_label(malicious_color(), error);
     }
     if let Some(extension) = &detonation.unsupported {
-        ui.label(format!("not executed: {extension} is not runnable"));
+        ui.label(strings.not_runnable(extension));
     }
 
     if !detonation.processes.is_empty() {
-        ui.label(format!("processes ({})", detonation.processes.len()));
+        ui.label(strings.processes(detonation.processes.len()));
         for process in detonation.processes.iter().take(10) {
             ui.label(
                 RichText::new(format!(
@@ -733,7 +785,7 @@ fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
     }
 
     if !detonation.connections.is_empty() {
-        ui.label(format!("connections ({})", detonation.connections.len()));
+        ui.label(strings.connections(detonation.connections.len()));
         for connection in detonation.connections.iter().take(10) {
             ui.label(
                 RichText::new(format!("  {} ({})", connection.remote, connection.state))
@@ -748,27 +800,21 @@ fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
     }
 
     if !detonation.files_created.is_empty() {
-        ui.label(format!(
-            "files created ({})",
-            detonation.files_created.len()
-        ));
+        ui.label(strings.files_created(detonation.files_created.len()));
         for path in detonation.files_created.iter().take(8) {
             ui.label(RichText::new(format!("  + {path}")).monospace().weak());
         }
     }
 
     if !detonation.registry_changed.is_empty() {
-        ui.label(format!(
-            "registry changes ({})",
-            detonation.registry_changed.len()
-        ));
+        ui.label(strings.registry_changes(detonation.registry_changed.len()));
         for change in detonation.registry_changed.iter().take(8) {
             ui.label(RichText::new(format!("  {change}")).monospace().weak());
         }
     }
 
     if !detonation.dropped.is_empty() {
-        ui.label(format!("dropped files kept ({})", detonation.dropped.len()));
+        ui.label(strings.dropped(detonation.dropped.len()));
         for path in detonation.dropped.iter().take(5) {
             ui.label(
                 RichText::new(format!("  {}", path.display()))

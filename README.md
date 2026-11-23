@@ -100,8 +100,11 @@ install). Drag a file or a folder onto the window, or use the buttons. The
 window never scans on the UI thread: a worker owns the engines, so the ClamAV
 daemon stays warm and the list fills as files finish. Selecting a row shows the
 hashes, per-engine facts and findings; **Copy JSON** exports that report. If
-ClamAV is missing, the top bar offers **Download ClamAV**, which installs it
-into the user profile with visible progress and no administrator prompt.
+ClamAV is missing, the app opens a setup dialog that installs it into the user
+profile with visible progress and no administrator prompt. The interface follows
+the Windows UI language (English and Spanish are shipped; anything else falls
+back to English); engine facts and caveats stay in English because they are
+data, not interface text.
 
 ## Detonation
 

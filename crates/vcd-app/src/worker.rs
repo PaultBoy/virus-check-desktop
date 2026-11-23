@@ -11,8 +11,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use vcd_core::{
-    Backend, DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope,
-    Scanner, Summary, install_portable_clamav_with,
+    Backend, DetonateOptions, Detonation, InstallStep, ScanControl, ScanProgress, ScanReport,
+    ScanScope, Scanner, Summary, install_portable_clamav_with,
 };
 
 pub enum Command {
@@ -38,7 +38,7 @@ pub enum Event {
     Failed(String),
     Detonation(Box<Detonation>),
     DetonationFailed(String),
-    ClamavProgress(String),
+    ClamavProgress(InstallStep),
     ClamavInstalled(PathBuf),
     ClamavFailed(String),
 }
@@ -83,8 +83,8 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
         match command {
             Command::Cancel => cancel.store(true, Ordering::SeqCst),
             Command::InstallClamav => {
-                let mut progress = |message: &str| {
-                    let _ = events.send(Event::ClamavProgress(message.to_string()));
+                let mut progress = |step: InstallStep| {
+                    let _ = events.send(Event::ClamavProgress(step));
                 };
                 match install_portable_clamav_with(&mut progress) {
                     Ok(root) => {
