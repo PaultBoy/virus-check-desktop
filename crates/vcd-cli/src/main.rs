@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use vcd_core::{
     Backend, Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus,
-    ScanReport, ScanScope, Scanner, Verdict, detect_support, detonate_with, enable_windows_sandbox,
+    ScanReport, ScanScope, Scanner, Verdict, clamav_portable_root, detect_support, detonate_with,
+    enable_windows_sandbox, install_portable_clamav,
 };
 
 fn main() -> ExitCode {
@@ -35,9 +36,48 @@ fn run(args: &[String]) -> ExitCode {
         "scan" => scan_command(&args[1..]),
         "detonate" => detonate_command(&args[1..]),
         "sandbox" => sandbox_command(&args[1..]),
+        "clamav" => clamav_command(&args[1..]),
         other => {
             eprintln!("error: unknown command '{other}'");
             print_usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn clamav_command(args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("install") => match install_portable_clamav() {
+            Ok(root) => {
+                println!("ClamAV is ready at {}", root.display());
+                println!("Directory scans will use it in process; no administrator was needed.");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("status") | None => {
+            match clamav_portable_root() {
+                Some(root) => println!("Portable install  {}", root.display()),
+                None => println!("Portable install  not installed (run: vcd clamav install)"),
+            }
+
+            let system = Path::new(r"C:\Program Files\ClamAV\clamscan.exe");
+            if system.is_file() {
+                println!(
+                    "System install    {}",
+                    system.parent().unwrap_or(system).display()
+                );
+            } else {
+                println!("System install    not found");
+            }
+
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("error: unknown clamav action '{other}' (expected install or status)");
             ExitCode::from(2)
         }
     }
@@ -554,6 +594,8 @@ Usage:
                              Run the sample in a sandbox
   vcd sandbox status         Show which backends this machine can use
   vcd sandbox enable         Enable Windows Sandbox (Pro/Enterprise, needs admin + reboot)
+  vcd clamav install         Download ClamAV into your profile (no administrator needed)
+  vcd clamav status          Show the ClamAV installations found
   vcd version                Print the version
 
 Exit codes:

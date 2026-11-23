@@ -63,6 +63,17 @@ type FnScanFile = unsafe extern "C" fn(
     *mut ScanOptions,
 ) -> c_int;
 type FnVersion = unsafe extern "C" fn() -> *const c_char;
+type FnSetMsg =
+    unsafe extern "C" fn(extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void));
+
+/// libclamav writes diagnostics to stderr; a scan report does not need them.
+extern "C" fn silent(
+    _severity: c_int,
+    _full_message: *const c_char,
+    _message: *const c_char,
+    _context: *mut c_void,
+) {
+}
 
 pub struct ClamAvDirect {
     /// Must outlive the engine and every function pointer taken from it.
@@ -72,6 +83,7 @@ pub struct ClamAvDirect {
     scan_file: FnScanFile,
     version: String,
     signatures: u32,
+    root: std::path::PathBuf,
 }
 
 // ClamAV's engine is safe to use from multiple threads; the handle is immutable
@@ -107,8 +119,12 @@ impl ClamAvDirect {
         let free: FnFree = symbol(&library, b"cl_engine_free\0")?;
         let scan_file: FnScanFile = symbol(&library, b"cl_scanfile\0")?;
         let version: FnVersion = symbol(&library, b"cl_retver\0")?;
+        let set_msg: FnSetMsg = symbol(&library, b"cl_set_clcb_msg\0")?;
 
         unsafe {
+            // Before init, so messages emitted during it are dropped too.
+            set_msg(silent);
+
             if init(0) != CL_SUCCESS {
                 return Err("cl_init failed".to_string());
             }
@@ -162,6 +178,7 @@ impl ClamAvDirect {
                 scan_file,
                 version: version_text,
                 signatures,
+                root: install.to_path_buf(),
             })
         }
     }
@@ -172,6 +189,10 @@ impl ClamAvDirect {
 
     pub fn signatures(&self) -> u32 {
         self.signatures
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Returns the signature names and the bytes ClamAV inspected. An error

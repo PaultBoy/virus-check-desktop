@@ -159,6 +159,7 @@ impl Engine for ClamAvEngine {
                                     direct.signatures()
                                 ),
                             ),
+                            Fact::new("database", direct.root().display().to_string()),
                         ])
                 }
                 Err(error) => EngineReport::failed(self.name(), error),
@@ -233,6 +234,9 @@ fn find_install(scan: &Path) -> Option<PathBuf> {
     }
     candidates.push(PathBuf::from(r"C:\Program Files\ClamAV"));
     candidates.push(PathBuf::from(r"C:\ClamAV"));
+    if let Some(portable) = crate::clamav_install::portable_root() {
+        candidates.push(portable);
+    }
 
     candidates
         .into_iter()

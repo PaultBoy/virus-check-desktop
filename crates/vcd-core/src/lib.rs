@@ -7,6 +7,7 @@
 //! (per-engine results that carry their own [`report::Coverage`]).
 
 pub mod analysis;
+pub mod clamav_install;
 pub mod engines;
 pub mod filetype;
 pub mod hashing;
@@ -21,6 +22,11 @@ pub(crate) mod test_support;
 pub use sandbox::{
     Backend, DetonateOptions, Detonation, Edition, SandboxError, SandboxSupport, detect_support,
     detonate, detonate_with, enable_windows_sandbox,
+};
+
+pub use clamav_install::{
+    install as install_portable_clamav, is_installed as clamav_portable_installed,
+    portable_root as clamav_portable_root,
 };
 
 pub use filetype::{ContentType, Family};

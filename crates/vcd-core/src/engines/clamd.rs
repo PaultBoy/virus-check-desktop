@@ -32,13 +32,66 @@ pub(crate) struct ClamPaths {
 }
 
 pub(crate) fn discover_paths() -> ClamPaths {
-    let install = Path::new(r"C:\Program Files\ClamAV");
+    let mut roots: Vec<PathBuf> = vec![
+        PathBuf::from(r"C:\Program Files\ClamAV"),
+        PathBuf::from(r"C:\ClamAV"),
+    ];
+    if let Some(portable) = crate::clamav_install::portable_root() {
+        roots.push(portable);
+    }
+
+    // A coherent installation is one root that has both the binaries and a
+    // database; mixing a system clamscan with a portable database would report
+    // signatures that do not belong to that engine. When both exist, the one
+    // with the newest database wins, so a stale copy never hides a fresh one.
+    let install = freshest(&roots).or_else(|| {
+        roots
+            .iter()
+            .find(|root| root.join("clamscan.exe").is_file())
+            .cloned()
+    });
+
+    let scan = install
+        .as_ref()
+        .map(|root| root.join("clamscan.exe"))
+        .filter(|candidate| candidate.is_file())
+        .or_else(|| find_binary("clamscan", Path::new(r"C:\Program Files\ClamAV")));
+
+    let daemon = install
+        .as_ref()
+        .map(|root| root.join("clamd.exe"))
+        .filter(|candidate| candidate.is_file())
+        .or_else(|| find_binary("clamd", Path::new(r"C:\Program Files\ClamAV")));
+
+    let database = install
+        .as_ref()
+        .map(|root| root.join("database"))
+        .filter(|directory| {
+            directory.join("daily.cvd").is_file() || directory.join("daily.cld").is_file()
+        });
 
     ClamPaths {
-        scan: find_binary("clamscan", install),
-        daemon: find_binary("clamd", install),
-        database: find_database(install),
+        scan,
+        daemon,
+        database,
     }
+}
+
+fn freshest(roots: &[PathBuf]) -> Option<PathBuf> {
+    roots
+        .iter()
+        .filter(|root| root.join("clamscan.exe").is_file())
+        .filter_map(|root| database_time(root).map(|time| (time, root)))
+        .max_by_key(|(time, _)| *time)
+        .map(|(_, root)| root.clone())
+}
+
+fn database_time(root: &Path) -> Option<std::time::SystemTime> {
+    let database = root.join("database");
+    [database.join("daily.cld"), database.join("daily.cvd")]
+        .into_iter()
+        .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
+        .max()
 }
 
 fn find_binary(name: &str, install: &Path) -> Option<PathBuf> {
@@ -54,14 +107,6 @@ fn find_binary(name: &str, install: &Path) -> Option<PathBuf> {
     candidates.push(Path::new(r"C:\ClamAV").join(format!("{name}.exe")));
 
     candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-fn find_database(install: &Path) -> Option<PathBuf> {
-    [install.join("database"), PathBuf::from(r"C:\ClamAV\db")]
-        .into_iter()
-        .find(|directory| {
-            directory.join("daily.cvd").is_file() || directory.join("daily.cld").is_file()
-        })
 }
 
 pub(crate) struct ClamDaemon {

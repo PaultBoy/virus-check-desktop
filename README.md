@@ -40,7 +40,8 @@ vcd scan .\samples\        # whole tree, one ClamAV database load for all files
 - Runs ClamAV in process through `libclamav.dll` for directory scans (the
   database loads once, ~3.6 M signatures, every file after that is a function
   call) and through `clamscan` for a single file. Reports a file above ClamAV's
-  2 GiB cap as unscanned rather than clean.
+  2 GiB cap as unscanned rather than clean. `vcd clamav install` sets it up
+  without an administrator.
 - Runs Microsoft Defender's command line scanner with `-DisableRemediation`, so
   a scan never quarantines or deletes the user's files.
 - Matches YARA rules in process through YARA-X: two built-in rules (EICAR and
@@ -60,8 +61,10 @@ Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
 
 - Windows 10/11
 - Rust 1.95+ with the MSVC toolchain (building from source only)
-- Optional: ClamAV on `PATH` or in `C:\Program Files\ClamAV` for signature
-  scanning. Without it the report says so and the verdict is `Inconclusive`.
+- Optional: ClamAV for signature scanning. `vcd clamav install` downloads the
+  official package into `%LOCALAPPDATA%\VirusCheckDesktop\clamav` and updates
+  its signatures without an administrator; a system-wide install also works.
+  Without ClamAV the report says so and the verdict is `Inconclusive`.
 - Optional: Sandboxie-Plus for detonation on Windows Home; Windows Sandbox for
   the VM backend on Pro/Enterprise/Education.
 
