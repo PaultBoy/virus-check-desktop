@@ -11,11 +11,14 @@ pub mod engines;
 pub mod filetype;
 pub mod hashing;
 pub mod report;
+pub mod sandbox;
 pub mod scanner;
 pub mod verdict;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+pub use sandbox::{DetonateOptions, Detonation, SandboxError, detonate};
 
 pub use filetype::{ContentType, Family};
 pub use report::{

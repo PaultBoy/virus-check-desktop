@@ -8,7 +8,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use vcd_core::{
-    Coverage, DirectoryReport, EngineReport, EngineStatus, ScanReport, ScanScope, Scanner, Verdict,
+    Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus, ScanReport,
+    ScanScope, Scanner, Verdict, detonate,
 };
 
 fn main() -> ExitCode {
@@ -32,6 +33,7 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "scan" => scan_command(&args[1..]),
+        "detonate" => detonate_command(&args[1..]),
         other => {
             eprintln!("error: unknown command '{other}'");
             print_usage();
@@ -40,8 +42,164 @@ fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn scan_command(args: &[String]) -> ExitCode {
+fn detonate_command(args: &[String]) -> ExitCode {
     let Some(path) = args.first() else {
+        eprintln!("error: detonate needs a path");
+        return ExitCode::from(2);
+    };
+
+    let mut options = DetonateOptions::default();
+    let mut json = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--network" => options.network = true,
+            "--duration" | "--timeout" => {
+                let flag = args[index].clone();
+                index += 1;
+                let value = args.get(index).and_then(|value| value.parse::<u64>().ok());
+                match (flag.as_str(), value) {
+                    ("--duration", Some(seconds)) if (1..=300).contains(&seconds) => {
+                        options.duration = Duration::from_secs(seconds);
+                    }
+                    ("--timeout", Some(seconds)) if (30..=900).contains(&seconds) => {
+                        options.timeout = Duration::from_secs(seconds);
+                    }
+                    _ => {
+                        eprintln!("error: {flag} needs a number of seconds in range");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            other => {
+                eprintln!("error: unknown option '{other}'");
+                return ExitCode::from(2);
+            }
+        }
+        index += 1;
+    }
+
+    match detonate(Path::new(path), &options) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => {
+                        eprintln!("error: cannot serialize report: {error}");
+                        return ExitCode::from(2);
+                    }
+                }
+            } else {
+                print_detonation(&report);
+            }
+
+            if report.error.is_some() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn print_detonation(report: &Detonation) {
+    println!("Sample     {}", report.sample.display());
+    println!(
+        "Sandbox    Windows Sandbox, networking {}",
+        if report.network_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
+    match (&report.unsupported, report.executed) {
+        (Some(extension), _) => println!(
+            "Executed   no: {extension} is not a type Windows can run"
+        ),
+        (None, true) => println!("Executed   yes"),
+        (None, false) => println!("Executed   no"),
+    }
+    if let Some(error) = &report.error {
+        println!("Error      {error}");
+    }
+    println!(
+        "Result     {:.1} s{}",
+        report.duration_ms as f64 / 1000.0,
+        if report.timed_out {
+            ", timed out (partial data)"
+        } else {
+            ""
+        }
+    );
+
+    println!();
+    println!("Processes  {}", report.processes.len());
+    for process in report.processes.iter().take(20) {
+        println!(
+            "  pid {} (parent {}) {}{}",
+            process.pid,
+            process.parent,
+            process.name.as_deref().unwrap_or("?"),
+            process
+                .command
+                .as_deref()
+                .map(|command| format!("  {command}"))
+                .unwrap_or_default()
+        );
+    }
+
+    if report.connections.is_empty() {
+        println!("Network    no connections observed");
+    } else {
+        println!("Network    {} connection(s)", report.connections.len());
+        for connection in report.connections.iter().take(20) {
+            println!(
+                "  {} from pid {} ({})",
+                connection.remote, connection.pid, connection.state
+            );
+        }
+    }
+
+    if report.dns.is_empty() {
+        println!("DNS        no lookups observed");
+    } else {
+        println!("DNS        {}", report.dns.join(", "));
+    }
+
+    println!(
+        "Files      {} created, {} modified",
+        report.files_created.len(),
+        report.files_modified.len()
+    );
+    for path in report.files_created.iter().take(20) {
+        println!("  + {path}");
+    }
+
+    println!("Registry   {} change(s)", report.registry_changed.len());
+    for change in &report.registry_changed {
+        println!("  {change}");
+    }
+
+    println!("Dropped    {} file(s) kept", report.dropped.len());
+    for path in &report.dropped {
+        println!("  - {}", path.display());
+    }
+
+    println!();
+    println!("Caveats");
+    for caveat in &report.caveats {
+        println!("  - {caveat}");
+    }
+}
+
+fn scan_command(args: &[String]) -> ExitCode {    let Some(path) = args.first() else {
         eprintln!("error: scan needs a path");
         return ExitCode::from(2);
     };
@@ -296,6 +454,8 @@ vcd - local malware triage. No upload, no size cap of its own.
 
 Usage:
   vcd scan <path> [--json]   Analyze a file or a directory tree
+  vcd detonate <path> [--duration N] [--timeout N] [--network] [--json]
+                             Run the sample inside Windows Sandbox
   vcd version                Print the version
 
 Exit codes:

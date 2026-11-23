@@ -10,12 +10,16 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
 use std::thread;
 
-use vcd_core::{ScanControl, ScanProgress, ScanReport, ScanScope, Scanner, Summary};
+use vcd_core::{
+    DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope, Scanner, Summary,
+    detonate,
+};
 
 pub enum Command {
     ScanFile(PathBuf),
     ScanFolder(PathBuf),
     Cancel,
+    Detonate(PathBuf, DetonateOptions),
 }
 
 pub enum Event {
@@ -26,6 +30,8 @@ pub enum Event {
     Error { path: PathBuf, error: String },
     Finished(Box<Summary>),
     Failed(String),
+    Detonation(Box<Detonation>),
+    DetonationFailed(String),
 }
 
 pub struct Worker {
@@ -67,6 +73,14 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
     while let Ok(command) = commands.recv() {
         match command {
             Command::Cancel => cancel.store(true, Ordering::SeqCst),
+            Command::Detonate(path, options) => match detonate(&path, &options) {
+                Ok(report) => {
+                    let _ = events.send(Event::Detonation(Box::new(report)));
+                }
+                Err(error) => {
+                    let _ = events.send(Event::DetonationFailed(error.to_string()));
+                }
+            },
             Command::ScanFile(path) => {
                 cancel.store(false, Ordering::SeqCst);
                 let _ = events.send(Event::Starting);

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use vcd_core::{Coverage, ScanReport, Severity, Summary, Verdict};
+use vcd_core::{Coverage, DetonateOptions, Detonation, ScanReport, Severity, Summary, Verdict};
 
 use worker::{Command, Event, Worker};
 
@@ -51,6 +51,10 @@ struct App {
     failure: Option<String>,
     root: Option<PathBuf>,
     scan_started: Option<std::time::Instant>,
+    scan_elapsed: Option<Duration>,
+    detonating: bool,
+    detonation: Option<Detonation>,
+    smoke_detonate: bool,
     smoke_deadline: Option<std::time::Instant>,
 }
 
@@ -59,6 +63,8 @@ impl App {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         let smoke = std::env::var_os("VCD_SMOKE").is_some();
+        let smoke_detonate = std::env::var_os("VCD_SMOKE_DETONATE").is_some();
+        let smoke_seconds = if smoke_detonate { 130 } else { 18 };
         let mut app = Self {
             worker: Worker::spawn(),
             phase: Phase::Idle,
@@ -70,7 +76,11 @@ impl App {
             failure: None,
             root: None,
             scan_started: None,
-            smoke_deadline: smoke.then(|| std::time::Instant::now() + Duration::from_secs(18)),
+            scan_elapsed: None,
+            detonating: false,
+            detonation: None,
+            smoke_detonate,
+            smoke_deadline: smoke.then(|| std::time::Instant::now() + Duration::from_secs(smoke_seconds)),
         };
 
         // Smoke hook: scan a path on startup so the window can be captured with
@@ -104,6 +114,8 @@ impl App {
         self.total = 0;
         self.finished = None;
         self.failure = None;
+        self.detonation = None;
+        self.detonating = false;
         self.root = if path.is_dir() {
             Some(path.to_path_buf())
         } else {
@@ -111,10 +123,11 @@ impl App {
         };
         self.phase = Phase::Starting;
         self.scan_started = Some(std::time::Instant::now());
+        self.scan_elapsed = None;
     }
 
     fn busy(&self) -> bool {
-        matches!(self.phase, Phase::Starting | Phase::Scanning)
+        matches!(self.phase, Phase::Starting | Phase::Scanning) || self.detonating
     }
 
     fn drain_events(&mut self) {
@@ -133,13 +146,30 @@ impl App {
                 Event::Finished(summary) => {
                     self.finished = Some(*summary);
                     self.phase = Phase::Done;
+                    self.scan_elapsed = self.scan_started.map(|start| start.elapsed());
                     if self.selected.is_none() && !self.files.is_empty() {
                         self.selected = Some(0);
+                    }
+                    if self.smoke_detonate
+                        && !self.detonating
+                        && self.detonation.is_none()
+                        && let Some(index) = self.selected
+                        && self.files.get(index).is_some_and(detonable)
+                    {
+                        self.start_detonation(index);
                     }
                 }
                 Event::Failed(error) => {
                     self.failure = Some(error);
                     self.phase = Phase::Idle;
+                }
+                Event::Detonation(report) => {
+                    self.detonating = false;
+                    self.detonation = Some(*report);
+                }
+                Event::DetonationFailed(error) => {
+                    self.detonating = false;
+                    self.failure = Some(error);
                 }
             }
         }
@@ -167,6 +197,14 @@ impl App {
         }
     }
 
+    fn start_detonation(&mut self, index: usize) {
+        let path = self.files[index].target.clone();
+        self.detonation = None;
+        self.detonating = true;
+        self.worker
+            .send(Command::Detonate(path, DetonateOptions::default()));
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -189,7 +227,8 @@ impl App {
                 self.start_folder(path);
             }
 
-            if self.busy() && ui.button("Cancel").clicked() {
+            if matches!(self.phase, Phase::Starting | Phase::Scanning) && ui.button("Cancel").clicked()
+            {
                 self.worker.cancel();
             }
 
@@ -203,7 +242,11 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            match self.phase {
+            if self.detonating {
+                ui.spinner();
+                ui.label("detonating in Windows Sandbox (up to ~2 min)…");
+            } else {
+                match self.phase {
                 Phase::Idle => {
                     ui.label("Ready");
                 }
@@ -229,8 +272,8 @@ impl App {
                 Phase::Done => {
                     if let Some(summary) = &self.finished {
                         let elapsed = self
-                            .scan_started
-                            .map(|start| start.elapsed().as_secs_f64())
+                            .scan_elapsed
+                            .map(|elapsed| elapsed.as_secs_f64())
                             .unwrap_or(summary.duration_ms as f64 / 1000.0);
                         ui.label(format!(
                             "{} files | {} malicious | {} suspicious | {} undetected | {} inconclusive | {} unknown | {} errors | {elapsed:.1} s",
@@ -243,6 +286,7 @@ impl App {
                             summary.errors
                         ));
                     }
+                }
                 }
             }
 
@@ -303,6 +347,9 @@ impl App {
             });
 
         if let Some(index) = clicked {
+            if self.selected != Some(index) {
+                self.detonation = None;
+            }
             self.selected = Some(index);
         }
 
@@ -322,7 +369,8 @@ impl App {
     }
 
     fn detail(&mut self, ui: &mut egui::Ui, index: usize) {
-        let file = &self.files[index];
+        let file = self.files[index].clone();
+        let mut request_detonation = false;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -412,13 +460,45 @@ impl App {
                     ui.add_space(6.0);
                 }
 
+                if detonable(&file) {
+                    if ui
+                        .add_enabled(
+                            !self.detonating && !self.busy(),
+                            egui::Button::new("Detonate in Windows Sandbox"),
+                        )
+                        .clicked()
+                    {
+                        request_detonation = true;
+                    }
+                } else {
+                    ui.label(
+                        RichText::new("detonation applies to executable and script types only")
+                            .weak(),
+                    );
+                }
+
+                if self.detonating {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("booting the sandbox, running the sample…");
+                    });
+                }
+
+                if let Some(detonation) = &self.detonation {
+                    render_detonation(ui, detonation);
+                }
+
                 ui.separator();
                 if ui.button("Copy JSON").clicked()
-                    && let Ok(json) = serde_json::to_string_pretty(file)
+                    && let Ok(json) = serde_json::to_string_pretty(&file)
                 {
                     ui.ctx().copy_text(json);
                 }
             });
+
+        if request_detonation {
+            self.start_detonation(index);
+        }
     }
 
     fn display_path(&self, path: &Path) -> String {
@@ -473,6 +553,122 @@ fn shorten(value: &str, limit: usize) -> String {
     let mut shortened: String = value.chars().take(limit.saturating_sub(3)).collect();
     shortened.push_str("...");
     shortened
+}
+
+fn detonable(file: &ScanReport) -> bool {
+    matches!(
+        file.extension.as_deref(),
+        Some(
+            "exe" | "scr"
+                | "com"
+                | "pif"
+                | "cpl"
+                | "msi"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "vbs"
+                | "vbe"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "hta"
+        )
+    )
+}
+
+fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
+    ui.separator();
+    ui.label(RichText::new("Sandbox detonation").strong());
+    ui.label(format!(
+        "executed: {} | {:.1} s{}",
+        if detonation.executed { "yes" } else { "no" },
+        detonation.duration_ms as f64 / 1000.0,
+        if detonation.timed_out {
+            " | timed out, partial data"
+        } else {
+            ""
+        }
+    ));
+    ui.label(format!(
+        "network: {}",
+        if detonation.network_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+
+    if let Some(error) = &detonation.error {
+        ui.colored_label(malicious_color(), error);
+    }
+    if let Some(extension) = &detonation.unsupported {
+        ui.label(format!("not executed: {extension} is not runnable"));
+    }
+
+    if !detonation.processes.is_empty() {
+        ui.label(format!("processes ({})", detonation.processes.len()));
+        for process in detonation.processes.iter().take(10) {
+            ui.label(
+                RichText::new(format!(
+                    "  {} (pid {})",
+                    process.name.as_deref().unwrap_or("?"),
+                    process.pid
+                ))
+                .monospace()
+                .weak(),
+            );
+        }
+    }
+
+    if !detonation.connections.is_empty() {
+        ui.label(format!("connections ({})", detonation.connections.len()));
+        for connection in detonation.connections.iter().take(10) {
+            ui.label(
+                RichText::new(format!("  {} ({})", connection.remote, connection.state))
+                    .monospace()
+                    .weak(),
+            );
+        }
+    }
+
+    if !detonation.dns.is_empty() {
+        ui.label(format!("dns: {}", detonation.dns.join(", ")));
+    }
+
+    if !detonation.files_created.is_empty() {
+        ui.label(format!("files created ({})", detonation.files_created.len()));
+        for path in detonation.files_created.iter().take(8) {
+            ui.label(RichText::new(format!("  + {path}")).monospace().weak());
+        }
+    }
+
+    if !detonation.registry_changed.is_empty() {
+        ui.label(format!(
+            "registry changes ({})",
+            detonation.registry_changed.len()
+        ));
+        for change in detonation.registry_changed.iter().take(8) {
+            ui.label(RichText::new(format!("  {change}")).monospace().weak());
+        }
+    }
+
+    if !detonation.dropped.is_empty() {
+        ui.label(format!("dropped files kept ({})", detonation.dropped.len()));
+        for path in detonation.dropped.iter().take(5) {
+            ui.label(
+                RichText::new(format!("  {}", path.display()))
+                    .monospace()
+                    .weak(),
+            );
+        }
+    }
+
+    for caveat in &detonation.caveats {
+        ui.label(
+            RichText::new(format!("! {caveat}")).color(Color32::from_rgb(200, 190, 90)),
+        );
+    }
 }
 
 fn findings(file: &ScanReport) -> String {    let mut parts = Vec::new();
