@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use vcd_core::{
-    Backend, Coverage, DetonateOptions, Detonation, SandboxSupport, ScanReport, Severity, Summary,
-    Verdict, detect_support, enable_windows_sandbox,
+    Backend, ClamavStatus, Coverage, DetonateOptions, Detonation, SandboxSupport, ScanReport,
+    Severity, Summary, Verdict, clamav_status, detect_support, enable_windows_sandbox,
 };
 
 use worker::{Command, Event, Worker};
@@ -58,6 +58,9 @@ struct App {
     detonating: bool,
     detonation: Option<Detonation>,
     support: SandboxSupport,
+    clamav: ClamavStatus,
+    installing_clamav: bool,
+    clamav_progress: Option<String>,
     notice: Option<String>,
     smoke_detonate: bool,
     smoke_backend: Option<Backend>,
@@ -91,6 +94,19 @@ impl App {
             detonating: false,
             detonation: None,
             support: detect_support(),
+            clamav: {
+                let status = clamav_status();
+                if std::env::var_os("VCD_SMOKE_NO_CLAMAV").is_some() {
+                    ClamavStatus {
+                        portable: None,
+                        system: None,
+                    }
+                } else {
+                    status
+                }
+            },
+            installing_clamav: false,
+            clamav_progress: None,
             notice: None,
             smoke_detonate,
             smoke_backend,
@@ -143,7 +159,9 @@ impl App {
     }
 
     fn busy(&self) -> bool {
-        matches!(self.phase, Phase::Starting | Phase::Scanning) || self.detonating
+        matches!(self.phase, Phase::Starting | Phase::Scanning)
+            || self.detonating
+            || self.installing_clamav
     }
 
     fn drain_events(&mut self) {
@@ -186,6 +204,21 @@ impl App {
                 }
                 Event::DetonationFailed(error) => {
                     self.detonating = false;
+                    self.failure = Some(error);
+                }
+                Event::ClamavProgress(message) => {
+                    self.installing_clamav = true;
+                    self.clamav_progress = Some(message);
+                }
+                Event::ClamavInstalled(root) => {
+                    self.installing_clamav = false;
+                    self.clamav_progress = None;
+                    self.clamav = clamav_status();
+                    self.notice = Some(format!("ClamAV ready at {}", root.display()));
+                }
+                Event::ClamavFailed(error) => {
+                    self.installing_clamav = false;
+                    self.clamav_progress = None;
                     self.failure = Some(error);
                 }
             }
@@ -250,6 +283,22 @@ impl App {
                 self.worker.cancel();
             }
 
+            ui.separator();
+
+            if self.clamav.available() {
+                ui.label(RichText::new("ClamAV ready").weak());
+            } else if ui
+                .add_enabled(!self.busy(), egui::Button::new("Download ClamAV…"))
+                .on_hover_text(
+                    "about 500 MB, downloaded into your profile; no administrator needed",
+                )
+                .clicked()
+            {
+                self.installing_clamav = true;
+                self.clamav_progress = None;
+                self.worker.send(Command::InstallClamav);
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new("drop a file or folder anywhere").weak());
             });
@@ -260,7 +309,14 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            if self.detonating {
+            if self.installing_clamav {
+                ui.spinner();
+                ui.label(
+                    self.clamav_progress
+                        .clone()
+                        .unwrap_or_else(|| "preparing ClamAV…".to_string()),
+                );
+            } else if self.detonating {
                 ui.spinner();
                 ui.label("detonating in the sandbox (up to ~2 min)…");
             } else {

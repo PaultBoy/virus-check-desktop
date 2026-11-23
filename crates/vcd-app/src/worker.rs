@@ -12,7 +12,7 @@ use std::thread;
 
 use vcd_core::{
     Backend, DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope,
-    Scanner, Summary,
+    Scanner, Summary, install_portable_clamav_with,
 };
 
 pub enum Command {
@@ -20,6 +20,7 @@ pub enum Command {
     ScanFolder(PathBuf),
     Cancel,
     Detonate(PathBuf, DetonateOptions, Backend),
+    InstallClamav,
 }
 
 pub enum Event {
@@ -37,6 +38,9 @@ pub enum Event {
     Failed(String),
     Detonation(Box<Detonation>),
     DetonationFailed(String),
+    ClamavProgress(String),
+    ClamavInstalled(PathBuf),
+    ClamavFailed(String),
 }
 
 pub struct Worker {
@@ -78,6 +82,22 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
     while let Ok(command) = commands.recv() {
         match command {
             Command::Cancel => cancel.store(true, Ordering::SeqCst),
+            Command::InstallClamav => {
+                let mut progress = |message: &str| {
+                    let _ = events.send(Event::ClamavProgress(message.to_string()));
+                };
+                match install_portable_clamav_with(&mut progress) {
+                    Ok(root) => {
+                        // The cached scanner was built without ClamAV; rebuild it
+                        // on the next scan so the new engine is picked up.
+                        cached = None;
+                        let _ = events.send(Event::ClamavInstalled(root));
+                    }
+                    Err(error) => {
+                        let _ = events.send(Event::ClamavFailed(error));
+                    }
+                }
+            }
             Command::Detonate(path, options, backend) => {
                 match vcd_core::detonate_with(&path, &options, backend) {
                     Ok(report) => {

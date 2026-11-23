@@ -61,10 +61,11 @@ Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
 
 - Windows 10/11
 - Rust 1.95+ with the MSVC toolchain (building from source only)
-- Optional: ClamAV for signature scanning. `vcd clamav install` downloads the
-  official package into `%LOCALAPPDATA%\VirusCheckDesktop\clamav` and updates
-  its signatures without an administrator; a system-wide install also works.
-  Without ClamAV the report says so and the verdict is `Inconclusive`.
+- Optional: ClamAV for signature scanning. The app (or `vcd clamav install`)
+  downloads the official package into `%LOCALAPPDATA%\VirusCheckDesktop\clamav`
+  and updates its signatures without an administrator; a system-wide install
+  also works. Without ClamAV the report says so and the verdict is
+  `Inconclusive`.
 - Optional: Sandboxie-Plus for detonation on Windows Home; Windows Sandbox for
   the VM backend on Pro/Enterprise/Education.
 
@@ -98,7 +99,9 @@ or run `target/release/virus-check-desktop.exe` (single file, no runtime to
 install). Drag a file or a folder onto the window, or use the buttons. The
 window never scans on the UI thread: a worker owns the engines, so the ClamAV
 daemon stays warm and the list fills as files finish. Selecting a row shows the
-hashes, per-engine facts and findings; **Copy JSON** exports that report.
+hashes, per-engine facts and findings; **Copy JSON** exports that report. If
+ClamAV is missing, the top bar offers **Download ClamAV**, which installs it
+into the user profile with visible progress and no administrator prompt.
 
 ## Detonation
 

@@ -25,8 +25,9 @@ pub use sandbox::{
 };
 
 pub use clamav_install::{
-    install as install_portable_clamav, is_installed as clamav_portable_installed,
-    portable_root as clamav_portable_root,
+    ClamavStatus, install as install_portable_clamav, install_with as install_portable_clamav_with,
+    is_installed as clamav_portable_installed, portable_root as clamav_portable_root,
+    status as clamav_status,
 };
 
 pub use filetype::{ContentType, Family};

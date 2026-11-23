@@ -38,10 +38,42 @@ pub fn is_installed() -> bool {
     portable_root().is_some()
 }
 
+/// Where ClamAV lives, if it lives anywhere.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClamavStatus {
+    pub portable: Option<PathBuf>,
+    pub system: Option<PathBuf>,
+}
+
+impl ClamavStatus {
+    pub fn available(&self) -> bool {
+        self.portable.is_some() || self.system.is_some()
+    }
+}
+
+pub fn status() -> ClamavStatus {
+    let system = [
+        PathBuf::from(r"C:\Program Files\ClamAV"),
+        PathBuf::from(r"C:\ClamAV"),
+    ]
+    .into_iter()
+    .find(|root| root.join("clamscan.exe").is_file());
+
+    ClamavStatus {
+        portable: portable_root(),
+        system,
+    }
+}
+
 /// Download, extract and update. Prints progress because it can move ~500 MB.
 pub fn install() -> Result<PathBuf, String> {
+    install_with(&mut |message| println!("{message}"))
+}
+
+/// Same, reporting each step so a GUI can show it.
+pub fn install_with(progress: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
     if let Some(root) = portable_root() {
-        println!("ClamAV is already installed at {}", root.display());
+        progress("ClamAV is already installed");
         return Ok(root);
     }
 
@@ -53,10 +85,10 @@ pub fn install() -> Result<PathBuf, String> {
         "https://github.com/Cisco-Talos/clamav/releases/download/clamav-{CLAMAV_VERSION}/clamav-{CLAMAV_VERSION}.win.x64.msi"
     );
 
-    println!("Downloading ClamAV {CLAMAV_VERSION} (about 214 MB)…");
+    progress("Downloading ClamAV (about 214 MB)…");
     download(&url, &msi)?;
 
-    println!("Extracting without installing…");
+    progress("Extracting without installing…");
     let status = Command::new("msiexec.exe")
         .args([
             "/a",
@@ -93,7 +125,7 @@ pub fn install() -> Result<PathBuf, String> {
     )
     .map_err(|error| format!("cannot write freshclam.conf: {error}"))?;
 
-    println!("Downloading the signature database (about 300 MB); this takes a while…");
+    progress("Downloading the signature database (about 300 MB); this takes a while…");
     let freshclam = root.join("freshclam.exe");
     let status = Command::new(&freshclam)
         .arg(format!("--config-file={}", config.display()))
@@ -110,6 +142,7 @@ pub fn install() -> Result<PathBuf, String> {
         return Err("the database download did not produce main.cvd".to_string());
     }
 
+    progress("ClamAV is ready");
     Ok(root)
 }
 
