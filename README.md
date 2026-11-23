@@ -6,10 +6,23 @@ uploaded, and the tool imposes no size cap of its own.
 > Not affiliated with VirusTotal. This is not a clone of it: it runs local
 > engines and reports what each one actually inspected.
 
+## Install
+
+Download the latest release from GitHub releases and run it; there is no runtime
+to install.
+
+- `virus-check-desktop.exe` — the desktop app
+- `vcd.exe` — the command line (`scan`, `detonate`, `sandbox`)
+
+Releases are built by GitHub Actions on every tag. See **Build and test** to
+build from source.
+
 ## Status
 
-Early. The static core and CLI work today; the ClamAV, Defender, YARA and
-Windows Sandbox engines are the next tasks (see `odd/tasks/virus-check-desktop.md`).
+Working end to end: static analysis (content typing, PE structure, YARA-X,
+ClamAV, Defender), directory scans with a managed ClamAV daemon, optional
+detonation in Windows Sandbox or Sandboxie, and the desktop app. The task log
+and the decisions behind it live in `odd/tasks/virus-check-desktop.md`.
 
 ## What it does now
 
@@ -47,9 +60,11 @@ Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
 ## Requirements
 
 - Windows 10/11
-- Rust 1.90+ with the MSVC toolchain (Rust build only)
+- Rust 1.95+ with the MSVC toolchain (building from source only)
 - Optional: ClamAV on `PATH` or in `C:\Program Files\ClamAV` for signature
   scanning. Without it the report says so and the verdict is `Inconclusive`.
+- Optional: Sandboxie-Plus for detonation on Windows Home; Windows Sandbox for
+  the VM backend on Pro/Enterprise/Education.
 
 ## Build and test
 
@@ -112,6 +127,15 @@ Caveats the report states for itself: Sandboxie shares the kernel, its process
 list is polling-based so very short-lived processes can be missed, and no
 observed behaviour is not proof of benign behaviour. Delete the detonation
 workspace (its path is reported) when you are done with the samples.
+
+## Architecture
+
+- `crates/vcd-core` — streaming hashes, content typing, PE and import analysis,
+  the engines (content-type, pe-structure, defender, yara, clamav), the
+  coverage/verdict model, directory scanning and both detonation backends.
+- `crates/vcd-cli` — `vcd`: `scan`, `detonate`, `sandbox`.
+- `crates/vcd-app` — the egui desktop shell. A worker thread owns the scanner so
+  the ClamAV daemon stays warm and the window never blocks.
 
 ## Design rule
 
