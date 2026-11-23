@@ -18,7 +18,10 @@ pub mod verdict;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub use sandbox::{DetonateOptions, Detonation, SandboxError, detonate};
+pub use sandbox::{
+    Backend, DetonateOptions, Detonation, Edition, SandboxError, SandboxSupport, detect_support,
+    detonate, detonate_with, enable_windows_sandbox,
+};
 
 pub use filetype::{ContentType, Family};
 pub use report::{

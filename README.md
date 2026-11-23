@@ -82,25 +82,36 @@ window never scans on the UI thread: a worker owns the engines, so the ClamAV
 daemon stays warm and the list fills as files finish. Selecting a row shows the
 hashes, per-engine facts and findings; **Copy JSON** exports that report.
 
-## Detonation (Windows Sandbox)
+## Detonation
 
 ```powershell
-vcd detonate .\sample.exe --duration 30
+vcd detonate .\sample.exe --backend sandboxie
+vcd sandbox status
 ```
 
-Runs the sample in a disposable Windows Sandbox: the payload is mapped
-read-only, networking is **disabled** unless `--network`, and a guest script
-records processes, TCP connections, DNS lookups, created files and Run-key
-changes. Dropped files (max 10, 5 MiB each) are copied back for rescanning.
-Only types Windows can execute are run; anything else is reported as
-unsupported instead of faking a detonation.
+Two backends, chosen explicitly or by what the machine can run:
 
-The same action is a button in the desktop app, on the selected file.
+| Backend | Editions | Boundary |
+| --- | --- | --- |
+| Windows Sandbox | Pro / Enterprise / Education | virtual machine |
+| Sandboxie-Plus | any, including Home | shared kernel (driver-level) |
 
-Caveats the report states for itself: the telemetry is written by the guest, so
-a sample that targets the harness can tamper with it, and no observed behaviour
-is not proof of benign behaviour. Delete the detonation workspace (its path is
-reported) when you are done with the samples.
+`vcd sandbox status` reports the edition and which backend is installed.
+`vcd sandbox enable` offers to turn on Windows Sandbox on Pro/Enterprise
+(administrator prompt, then a reboot). The desktop app shows one button per
+installed backend and, when none is installed, the exact next step for the
+detected edition.
+
+Both backends map the payload read-only (Windows Sandbox) or run it inside a
+box with network blocked by default, record processes, TCP connections, DNS
+lookups and dropped files (copied back for rescanning), and stop on a timeout.
+Registry changes are captured in Windows Sandbox only: Sandboxie virtualizes
+them into a hive this tool does not decode, and the report says so.
+
+Caveats the report states for itself: Sandboxie shares the kernel, its process
+list is polling-based so very short-lived processes can be missed, and no
+observed behaviour is not proof of benign behaviour. Delete the detonation
+workspace (its path is reported) when you are done with the samples.
 
 ## Design rule
 

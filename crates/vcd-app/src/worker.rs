@@ -11,15 +11,15 @@ use std::sync::Arc;
 use std::thread;
 
 use vcd_core::{
-    DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope, Scanner, Summary,
-    detonate,
+    Backend, DetonateOptions, Detonation, ScanControl, ScanProgress, ScanReport, ScanScope, Scanner,
+    Summary,
 };
 
 pub enum Command {
     ScanFile(PathBuf),
     ScanFolder(PathBuf),
     Cancel,
-    Detonate(PathBuf, DetonateOptions),
+    Detonate(PathBuf, DetonateOptions, Backend),
 }
 
 pub enum Event {
@@ -73,14 +73,16 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
     while let Ok(command) = commands.recv() {
         match command {
             Command::Cancel => cancel.store(true, Ordering::SeqCst),
-            Command::Detonate(path, options) => match detonate(&path, &options) {
-                Ok(report) => {
-                    let _ = events.send(Event::Detonation(Box::new(report)));
+            Command::Detonate(path, options, backend) => {
+                match vcd_core::detonate_with(&path, &options, backend) {
+                    Ok(report) => {
+                        let _ = events.send(Event::Detonation(Box::new(report)));
+                    }
+                    Err(error) => {
+                        let _ = events.send(Event::DetonationFailed(error.to_string()));
+                    }
                 }
-                Err(error) => {
-                    let _ = events.send(Event::DetonationFailed(error.to_string()));
-                }
-            },
+            }
             Command::ScanFile(path) => {
                 cancel.store(false, Ordering::SeqCst);
                 let _ = events.send(Event::Starting);

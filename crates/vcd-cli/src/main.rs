@@ -8,8 +8,9 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use vcd_core::{
-    Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus, ScanReport,
-    ScanScope, Scanner, Verdict, detonate,
+    Backend, Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus,
+    ScanReport, ScanScope, Scanner, Verdict, detect_support, detonate_with,
+    enable_windows_sandbox,
 };
 
 fn main() -> ExitCode {
@@ -34,9 +35,77 @@ fn run(args: &[String]) -> ExitCode {
         }
         "scan" => scan_command(&args[1..]),
         "detonate" => detonate_command(&args[1..]),
+        "sandbox" => sandbox_command(&args[1..]),
         other => {
             eprintln!("error: unknown command '{other}'");
             print_usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn sandbox_command(args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("enable") => enable_sandbox(),
+        Some("status") | None => {
+            let support = detect_support();
+            println!("Edition          {}", support.edition.as_str());
+            println!(
+                "Windows Sandbox  {}",
+                if support.windows_sandbox {
+                    "installed"
+                } else {
+                    "not installed"
+                }
+            );
+            println!(
+                "Sandboxie        {}",
+                if support.sandboxie {
+                    "installed"
+                } else {
+                    "not installed"
+                }
+            );
+            match support.recommended() {
+                Some(backend) => println!("Recommended      {}", backend.as_str()),
+                None => println!("Recommended      none"),
+            }
+            println!();
+            println!("{}", support.guidance());
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("error: unknown sandbox action '{other}' (expected status or enable)");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn enable_sandbox() -> ExitCode {
+    let support = detect_support();
+
+    if support.windows_sandbox {
+        println!("Windows Sandbox is already installed.");
+        return ExitCode::SUCCESS;
+    }
+
+    if !support.edition.supports_windows_sandbox() {
+        eprintln!(
+            "error: Windows Sandbox requires Pro/Enterprise (this is {}). Install Sandboxie-Plus instead.",
+            support.edition.as_str()
+        );
+        return ExitCode::from(2);
+    }
+
+    match enable_windows_sandbox() {
+        Ok(log) => {
+            println!("A UAC prompt is asking to enable Windows Sandbox.");
+            println!("Log:    {}", log.display());
+            println!("A reboot is required before the sandbox works.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
             ExitCode::from(2)
         }
     }
@@ -49,6 +118,7 @@ fn detonate_command(args: &[String]) -> ExitCode {
     };
 
     let mut options = DetonateOptions::default();
+    let mut backend: Option<Backend> = None;
     let mut json = false;
     let mut index = 1;
 
@@ -56,6 +126,17 @@ fn detonate_command(args: &[String]) -> ExitCode {
         match args[index].as_str() {
             "--json" => json = true,
             "--network" => options.network = true,
+            "--backend" => {
+                index += 1;
+                backend = match args.get(index).map(String::as_str) {
+                    Some("windows") | Some("sandbox") => Some(Backend::WindowsSandbox),
+                    Some("sandboxie") => Some(Backend::Sandboxie),
+                    _ => {
+                        eprintln!("error: --backend expects 'windows' or 'sandboxie'");
+                        return ExitCode::from(2);
+                    }
+                };
+            }
             "--duration" | "--timeout" => {
                 let flag = args[index].clone();
                 index += 1;
@@ -81,7 +162,17 @@ fn detonate_command(args: &[String]) -> ExitCode {
         index += 1;
     }
 
-    match detonate(Path::new(path), &options) {
+    let support = detect_support();
+    let backend = match backend.or_else(|| support.recommended()) {
+        Some(backend) => backend,
+        None => {
+            eprintln!("error: no detonation backend available");
+            eprintln!("       {}", support.guidance());
+            return ExitCode::from(2);
+        }
+    };
+
+    match detonate_with(Path::new(path), &options, backend) {
         Ok(report) => {
             if json {
                 match serde_json::to_string_pretty(&report) {
@@ -110,8 +201,10 @@ fn detonate_command(args: &[String]) -> ExitCode {
 
 fn print_detonation(report: &Detonation) {
     println!("Sample     {}", report.sample.display());
+    println!("Backend    {}", report.backend.as_str());
     println!(
-        "Sandbox    Windows Sandbox, networking {}",
+        "Sandbox    {}, networking {}",
+        report.backend.as_str(),
         if report.network_enabled {
             "enabled"
         } else {
@@ -454,8 +547,10 @@ vcd - local malware triage. No upload, no size cap of its own.
 
 Usage:
   vcd scan <path> [--json]   Analyze a file or a directory tree
-  vcd detonate <path> [--duration N] [--timeout N] [--network] [--json]
-                             Run the sample inside Windows Sandbox
+  vcd detonate <path> [--duration N] [--timeout N] [--backend windows|sandboxie] [--network] [--json]
+                             Run the sample in a sandbox
+  vcd sandbox status         Show which backends this machine can use
+  vcd sandbox enable         Enable Windows Sandbox (Pro/Enterprise, needs admin + reboot)
   vcd version                Print the version
 
 Exit codes:

@@ -21,6 +21,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+mod capabilities;
+mod sandboxie;
+
+pub use capabilities::{Backend, Edition, SandboxSupport, detect_support, enable_windows_sandbox};
+
 const RUN_SCRIPT: &str = include_str!("sandbox/run.ps1");
 const SANDBOX_DESKTOP: &str = r"C:\Users\WDAGUtilityAccount\Desktop";
 const SESSION_IMAGES: [&str; 2] = ["WindowsSandboxRemoteSession.exe", "WindowsSandboxServer.exe"];
@@ -75,29 +80,29 @@ pub struct SandboxConnection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SandboxReport {
+pub(crate) struct SandboxReport {
     #[serde(default)]
-    executed: bool,
+    pub(crate) executed: bool,
     #[serde(default)]
-    unsupported: Option<String>,
+    pub(crate) unsupported: Option<String>,
     #[serde(default)]
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     #[serde(default)]
-    finished: bool,
+    pub(crate) finished: bool,
     #[serde(default)]
-    sample: Option<String>,
+    pub(crate) sample: Option<String>,
     #[serde(default)]
-    processes: Vec<SandboxProcess>,
+    pub(crate) processes: Vec<SandboxProcess>,
     #[serde(default)]
-    connections: Vec<SandboxConnection>,
+    pub(crate) connections: Vec<SandboxConnection>,
     #[serde(default)]
-    dns: Vec<String>,
+    pub(crate) dns: Vec<String>,
     #[serde(default)]
-    files_created: Vec<String>,
+    pub(crate) files_created: Vec<String>,
     #[serde(default)]
-    files_modified: Vec<String>,
+    pub(crate) files_modified: Vec<String>,
     #[serde(default)]
-    registry_changed: Vec<String>,
+    pub(crate) registry_changed: Vec<String>,
 }
 
 impl Default for SandboxReport {
@@ -122,6 +127,7 @@ impl Default for SandboxReport {
 pub struct Detonation {
     pub sample: PathBuf,
     pub workspace: PathBuf,
+    pub backend: Backend,
     pub network_enabled: bool,
     pub executed: bool,
     pub unsupported: Option<String>,
@@ -140,6 +146,33 @@ pub struct Detonation {
 }
 
 pub fn detonate(sample: &Path, options: &DetonateOptions) -> Result<Detonation, SandboxError> {
+    detonate_with(sample, options, Backend::WindowsSandbox)
+}
+
+/// Run the sample in the requested backend. The caller chooses; this never
+/// silently downgrades a VM boundary to a shared-kernel sandbox.
+pub fn detonate_with(
+    sample: &Path,
+    options: &DetonateOptions,
+    backend: Backend,
+) -> Result<Detonation, SandboxError> {
+    match backend {
+        Backend::WindowsSandbox => detonate_windows(sample, options),
+        Backend::Sandboxie => {
+            let paths = sandboxie::discover().ok_or_else(|| {
+                SandboxError::Launch(
+                    "Sandboxie-Plus is not installed (Start.exe not found)".to_string(),
+                )
+            })?;
+            sandboxie::detonate(sample, options, &paths)
+        }
+    }
+}
+
+fn detonate_windows(
+    sample: &Path,
+    options: &DetonateOptions,
+) -> Result<Detonation, SandboxError> {
     if !sample.is_file() {
         return Err(SandboxError::Io(io::Error::new(
             io::ErrorKind::NotFound,
@@ -217,6 +250,7 @@ pub fn detonate(sample: &Path, options: &DetonateOptions) -> Result<Detonation, 
     Ok(Detonation {
         sample: sample.to_path_buf(),
         workspace,
+        backend: Backend::WindowsSandbox,
         network_enabled: options.network,
         executed: report.executed,
         unsupported: report.unsupported.clone(),
@@ -234,7 +268,7 @@ pub fn detonate(sample: &Path, options: &DetonateOptions) -> Result<Detonation, 
     })
 }
 
-fn workspace_dir() -> PathBuf {
+pub(crate) fn workspace_dir() -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
@@ -299,7 +333,7 @@ fn wsb_config(payload: &Path, out: &Path, network: bool) -> String {
     )
 }
 
-fn read_report(path: &Path) -> Option<SandboxReport> {
+pub(crate) fn read_report(path: &Path) -> Option<SandboxReport> {
     let text = fs::read_to_string(path).ok()?;
     // Windows PowerShell 5.1 writes UTF-8 with a BOM unless told otherwise, and
     // older builds of the guest script did exactly that.
@@ -420,3 +454,4 @@ mod tests {
         assert!(matches!(error, SandboxError::Io(_)));
     }
 }
+

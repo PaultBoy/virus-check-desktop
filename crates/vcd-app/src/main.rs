@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use vcd_core::{Coverage, DetonateOptions, Detonation, ScanReport, Severity, Summary, Verdict};
+use vcd_core::{
+    Backend, Coverage, DetonateOptions, Detonation, SandboxSupport, ScanReport, Severity, Summary,
+    Verdict, detect_support, enable_windows_sandbox,
+};
 
 use worker::{Command, Event, Worker};
 
@@ -54,7 +57,10 @@ struct App {
     scan_elapsed: Option<Duration>,
     detonating: bool,
     detonation: Option<Detonation>,
+    support: SandboxSupport,
+    notice: Option<String>,
     smoke_detonate: bool,
+    smoke_backend: Option<Backend>,
     smoke_deadline: Option<std::time::Instant>,
 }
 
@@ -64,6 +70,11 @@ impl App {
 
         let smoke = std::env::var_os("VCD_SMOKE").is_some();
         let smoke_detonate = std::env::var_os("VCD_SMOKE_DETONATE").is_some();
+        let smoke_backend = match std::env::var("VCD_SMOKE_BACKEND").as_deref() {
+            Ok("sandboxie") => Some(Backend::Sandboxie),
+            Ok("windows") => Some(Backend::WindowsSandbox),
+            _ => None,
+        };
         let smoke_seconds = if smoke_detonate { 130 } else { 18 };
         let mut app = Self {
             worker: Worker::spawn(),
@@ -79,7 +90,10 @@ impl App {
             scan_elapsed: None,
             detonating: false,
             detonation: None,
+            support: detect_support(),
+            notice: None,
             smoke_detonate,
+            smoke_backend,
             smoke_deadline: smoke.then(|| std::time::Instant::now() + Duration::from_secs(smoke_seconds)),
         };
 
@@ -116,6 +130,7 @@ impl App {
         self.failure = None;
         self.detonation = None;
         self.detonating = false;
+        self.notice = None;
         self.root = if path.is_dir() {
             Some(path.to_path_buf())
         } else {
@@ -155,8 +170,9 @@ impl App {
                         && self.detonation.is_none()
                         && let Some(index) = self.selected
                         && self.files.get(index).is_some_and(detonable)
+                        && let Some(backend) = self.smoke_backend.or(self.support.recommended())
                     {
-                        self.start_detonation(index);
+                        self.start_detonation(index, backend);
                     }
                 }
                 Event::Failed(error) => {
@@ -197,12 +213,15 @@ impl App {
         }
     }
 
-    fn start_detonation(&mut self, index: usize) {
+    fn start_detonation(&mut self, index: usize, backend: Backend) {
         let path = self.files[index].target.clone();
         self.detonation = None;
         self.detonating = true;
-        self.worker
-            .send(Command::Detonate(path, DetonateOptions::default()));
+        self.worker.send(Command::Detonate(
+            path,
+            DetonateOptions::default(),
+            backend,
+        ));
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -244,7 +263,7 @@ impl App {
         ui.horizontal(|ui| {
             if self.detonating {
                 ui.spinner();
-                ui.label("detonating in Windows Sandbox (up to ~2 min)…");
+                ui.label("detonating in the sandbox (up to ~2 min)…");
             } else {
                 match self.phase {
                 Phase::Idle => {
@@ -292,6 +311,10 @@ impl App {
 
             if let Some(failure) = &self.failure {
                 ui.colored_label(malicious_color(), failure);
+            }
+
+            if let Some(notice) = &self.notice {
+                ui.label(RichText::new(notice).color(Color32::from_rgb(150, 190, 230)));
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -370,7 +393,8 @@ impl App {
 
     fn detail(&mut self, ui: &mut egui::Ui, index: usize) {
         let file = self.files[index].clone();
-        let mut request_detonation = false;
+        let mut request_detonation: Option<Backend> = None;
+        let mut request_enable = false;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -461,14 +485,34 @@ impl App {
                 }
 
                 if detonable(&file) {
-                    if ui
-                        .add_enabled(
-                            !self.detonating && !self.busy(),
-                            egui::Button::new("Detonate in Windows Sandbox"),
-                        )
-                        .clicked()
-                    {
-                        request_detonation = true;
+                    let backends = self.support.available();
+                    if backends.is_empty() {
+                        ui.label(RichText::new(self.support.guidance()).weak());
+                        if self.support.edition.supports_windows_sandbox()
+                            && ui
+                                .button("Enable Windows Sandbox…")
+                                .on_hover_text("administrator prompt, then a reboot")
+                                .clicked()
+                        {
+                            request_enable = true;
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            for backend in backends {
+                                if ui
+                                    .add_enabled(
+                                        !self.detonating && !self.busy(),
+                                        egui::Button::new(format!(
+                                            "Detonate ({})",
+                                            backend.as_str()
+                                        )),
+                                    )
+                                    .clicked()
+                                {
+                                    request_detonation = Some(backend);
+                                }
+                            }
+                        });
                     }
                 } else {
                     ui.label(
@@ -496,8 +540,20 @@ impl App {
                 }
             });
 
-        if request_detonation {
-            self.start_detonation(index);
+        if let Some(backend) = request_detonation {
+            self.start_detonation(index, backend);
+        }
+
+        if request_enable {
+            match enable_windows_sandbox() {
+                Ok(log) => {
+                    self.notice = Some(format!(
+                        "accept the administrator prompt; a reboot is required (log: {})",
+                        log.display()
+                    ));
+                }
+                Err(error) => self.failure = Some(error),
+            }
         }
     }
 
@@ -580,6 +636,7 @@ fn detonable(file: &ScanReport) -> bool {
 fn render_detonation(ui: &mut egui::Ui, detonation: &Detonation) {
     ui.separator();
     ui.label(RichText::new("Sandbox detonation").strong());
+    ui.label(format!("backend: {}", detonation.backend.as_str()));
     ui.label(format!(
         "executed: {} | {:.1} s{}",
         if detonation.executed { "yes" } else { "no" },
