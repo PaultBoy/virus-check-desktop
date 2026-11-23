@@ -122,9 +122,9 @@ Two backends, chosen explicitly or by what the machine can run:
 
 `vcd sandbox status` reports the edition and which backend is installed.
 `vcd sandbox enable` offers to turn on Windows Sandbox on Pro/Enterprise
-(administrator prompt, then a reboot). The desktop app shows one button per
-installed backend and, when none is installed, the exact next step for the
-detected edition.
+(administrator prompt, then a reboot). The desktop app opens a modal to choose the backend when a sample is detonated,
+with the recommended one labelled as such; it keeps the run's progress in that
+modal until the sandbox reports back.
 
 Both backends map the payload read-only (Windows Sandbox) or run it inside a
 box with network blocked by default, record processes, TCP connections, DNS

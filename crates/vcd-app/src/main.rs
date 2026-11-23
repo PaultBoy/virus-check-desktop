@@ -65,6 +65,10 @@ struct App {
     clamav_progress: Option<InstallStep>,
     clamav_error: Option<String>,
     show_clamav_prompt: bool,
+    show_sandbox_prompt: bool,
+    sandbox_index: Option<usize>,
+    sandbox_error: Option<String>,
+    smoke_sandbox_prompt: bool,
     strings: Strings,
     notice: Option<String>,
     smoke_detonate: bool,
@@ -114,6 +118,10 @@ impl App {
             clamav_progress: None,
             clamav_error: None,
             show_clamav_prompt: false,
+            show_sandbox_prompt: false,
+            sandbox_index: None,
+            sandbox_error: None,
+            smoke_sandbox_prompt: std::env::var_os("VCD_SMOKE_SANDBOX_PROMPT").is_some(),
             strings: Strings::system(),
             notice: None,
             smoke_detonate,
@@ -203,6 +211,14 @@ impl App {
                     {
                         self.start_detonation(index, backend);
                     }
+
+                    if self.smoke_sandbox_prompt
+                        && let Some(index) = self.selected
+                        && self.files.get(index).is_some_and(detonable)
+                    {
+                        self.sandbox_index = Some(index);
+                        self.show_sandbox_prompt = true;
+                    }
                 }
                 Event::Failed(error) => {
                     self.failure = Some(error);
@@ -211,9 +227,12 @@ impl App {
                 Event::Detonation(report) => {
                     self.detonating = false;
                     self.detonation = Some(*report);
+                    self.show_sandbox_prompt = false;
+                    self.sandbox_error = None;
                 }
                 Event::DetonationFailed(error) => {
                     self.detonating = false;
+                    self.sandbox_error = Some(error.clone());
                     self.failure = Some(error);
                 }
                 Event::ClamavProgress(step) => {
@@ -270,6 +289,117 @@ impl App {
 
     /// Setup prompt shown over the window when ClamAV is missing. It replaces
     /// the old toolbar button: one decision, explained, with its cost.
+    /// Backend choice for detonation, shown over the window when the sample is
+    /// about to be loaded. The recommended backend is labelled as such.
+    fn sandbox_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_sandbox_prompt {
+            return;
+        }
+
+        let Some(index) = self.sandbox_index.filter(|index| *index < self.files.len()) else {
+            self.show_sandbox_prompt = false;
+            return;
+        };
+
+        let title = self.strings.sandbox_title();
+        let body = self.strings.sandbox_body();
+        let cancel = self.strings.cancel();
+        let booting = self.strings.booting_sandbox();
+        let recommended = self.support.recommended();
+        let backends = self.support.available();
+        let supports_vm = self.support.edition.supports_windows_sandbox();
+        let detonating = self.detonating;
+        let error = self.sandbox_error.clone();
+        let sample = self.files[index]
+            .target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("sample")
+            .to_string();
+
+        let mut chosen = None;
+        let mut close = false;
+        let mut enable = false;
+
+        egui::Modal::new(egui::Id::new("sandbox_prompt")).show(ctx, |ui| {
+            ui.set_max_width(520.0);
+            ui.heading(title);
+            ui.label(RichText::new(sample).monospace().weak());
+            ui.add_space(8.0);
+            ui.label(body);
+
+            if let Some(error) = &error {
+                ui.add_space(8.0);
+                ui.colored_label(malicious_color(), error);
+            }
+
+            ui.add_space(10.0);
+
+            if detonating {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(booting);
+                });
+            } else {
+                if backends.is_empty() {
+                    let message = if supports_vm {
+                        self.strings.no_backend_pro()
+                    } else {
+                        self.strings.no_backend_home()
+                    };
+                    ui.label(message);
+                    ui.add_space(6.0);
+                    if supports_vm && ui.button(self.strings.enable_sandbox()).clicked() {
+                        enable = true;
+                    }
+                } else {
+                    for backend in backends {
+                        let label = if Some(backend) == recommended {
+                            format!("{} ({})", backend.as_str(), self.strings.recommended())
+                        } else {
+                            backend.as_str().to_string()
+                        };
+
+                        if ui.button(label).clicked() {
+                            chosen = Some(backend);
+                        }
+
+                        let description = match backend {
+                            Backend::WindowsSandbox => self.strings.backend_windows(),
+                            Backend::Sandboxie => self.strings.backend_sandboxie(),
+                        };
+                        ui.label(RichText::new(description).weak());
+                        ui.add_space(6.0);
+                    }
+                }
+
+                ui.add_space(6.0);
+                if ui.button(cancel).clicked() {
+                    close = true;
+                }
+            }
+        });
+
+        if close {
+            self.show_sandbox_prompt = false;
+            self.sandbox_error = None;
+        }
+
+        if enable {
+            match enable_windows_sandbox() {
+                Ok(log) => {
+                    self.notice = Some(self.strings.enable_notice(&log.display().to_string()))
+                }
+                Err(failure) => self.sandbox_error = Some(failure),
+            }
+        }
+
+        if let Some(backend) = chosen {
+            self.show_sandbox_prompt = true;
+            self.start_detonation(index, backend);
+        }
+    }
+
     fn clamav_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_clamav_prompt {
             return;
@@ -513,8 +643,7 @@ impl App {
 
     fn detail(&mut self, ui: &mut egui::Ui, index: usize) {
         let file = self.files[index].clone();
-        let mut request_detonation: Option<Backend> = None;
-        let mut request_enable = false;
+        let mut request_sandbox_prompt = false;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -599,34 +728,14 @@ impl App {
                 }
 
                 if detonable(&file) {
-                    let backends = self.support.available();
-                    if backends.is_empty() {
-                        ui.label(RichText::new(self.support.guidance()).weak());
-                        if self.support.edition.supports_windows_sandbox()
-                            && ui
-                                .button("Enable Windows Sandbox…")
-                                .on_hover_text("administrator prompt, then a reboot")
-                                .clicked()
-                        {
-                            request_enable = true;
-                        }
-                    } else {
-                        ui.horizontal(|ui| {
-                            for backend in backends {
-                                if ui
-                                    .add_enabled(
-                                        !self.detonating && !self.busy(),
-                                        egui::Button::new(format!(
-                                            "Detonate ({})",
-                                            backend.as_str()
-                                        )),
-                                    )
-                                    .clicked()
-                                {
-                                    request_detonation = Some(backend);
-                                }
-                            }
-                        });
+                    if ui
+                        .add_enabled(
+                            !self.busy(),
+                            egui::Button::new(self.strings.detonate_action()),
+                        )
+                        .clicked()
+                    {
+                        request_sandbox_prompt = true;
                     }
                 } else {
                     ui.label(RichText::new(self.strings.detonation_only()).weak());
@@ -651,20 +760,10 @@ impl App {
                 }
             });
 
-        if let Some(backend) = request_detonation {
-            self.start_detonation(index, backend);
-        }
-
-        if request_enable {
-            match enable_windows_sandbox() {
-                Ok(log) => {
-                    self.notice = Some(format!(
-                        "accept the administrator prompt; a reboot is required (log: {})",
-                        log.display()
-                    ));
-                }
-                Err(error) => self.failure = Some(error),
-            }
+        if request_sandbox_prompt {
+            self.sandbox_index = Some(index);
+            self.sandbox_error = None;
+            self.show_sandbox_prompt = true;
         }
     }
 
@@ -710,6 +809,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| self.results(ui));
 
         self.clamav_dialog(ctx);
+        self.sandbox_dialog(ctx);
     }
 }
 

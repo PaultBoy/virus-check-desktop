@@ -271,6 +271,70 @@ impl Strings {
         )
     }
 
+    pub fn detonate_action(&self) -> &'static str {
+        self.pick("Load in a sandbox…", "Cargar en un espacio aislado…")
+    }
+
+    pub fn sandbox_title(&self) -> &'static str {
+        self.pick("Load in a sandbox", "Cargar en un espacio aislado")
+    }
+
+    pub fn sandbox_body(&self) -> &'static str {
+        self.pick(
+            "The sample runs isolated from your system. Pick the backend; the\n\
+             recommended one gives the stronger boundary.",
+            "La muestra corre aislada de tu sistema. Elegí el motor; el\n\
+             recomendado ofrece el aislamiento más fuerte.",
+        )
+    }
+
+    pub fn recommended(&self) -> &'static str {
+        self.pick("recommended", "recomendado")
+    }
+
+    pub fn backend_windows(&self) -> &'static str {
+        self.pick(
+            "virtual machine: the sample cannot touch the real system",
+            "máquina virtual: la muestra no puede tocar el sistema real",
+        )
+    }
+
+    pub fn backend_sandboxie(&self) -> &'static str {
+        self.pick(
+            "shared kernel: works on Windows Home, weaker boundary",
+            "kernel compartido: funciona en Windows Home, aislamiento más débil",
+        )
+    }
+
+    pub fn no_backend_pro(&self) -> &'static str {
+        self.pick(
+            "Windows Sandbox is not enabled. Enable it (administrator + reboot), or install Sandboxie-Plus.",
+            "Windows Sandbox no está habilitado. Podés habilitarlo (administrador + reinicio) o instalar Sandboxie-Plus.",
+        )
+    }
+
+    pub fn no_backend_home(&self) -> &'static str {
+        self.pick(
+            "Windows Sandbox requires Pro/Enterprise. Install Sandboxie-Plus to detonate.",
+            "Windows Sandbox requiere Pro/Enterprise. Instalá Sandboxie-Plus para detonar.",
+        )
+    }
+
+    pub fn enable_sandbox(&self) -> &'static str {
+        self.pick("Enable Windows Sandbox…", "Habilitar Windows Sandbox…")
+    }
+
+    pub fn enable_notice(&self, log: &str) -> String {
+        match self.lang {
+            Lang::En => {
+                format!("accept the administrator prompt; a reboot is required (log: {log})")
+            }
+            Lang::Es => {
+                format!("aceptá el pedido de administrador; hace falta reiniciar (log: {log})")
+            }
+        }
+    }
+
     pub fn clamav_dialog_title(&self) -> &'static str {
         self.pick("ClamAV is not installed", "ClamAV no está instalado")
     }
