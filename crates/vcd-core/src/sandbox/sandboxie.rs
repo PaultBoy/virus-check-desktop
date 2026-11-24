@@ -118,7 +118,15 @@ pub(crate) fn detonate(
         ));
     }
 
-    let report = read_report(&result).unwrap_or_default();
+    // A watcher that never wrote a report tells us nothing: returning an empty
+    // detonation as success would look like a clean run with no evidence.
+    let Some(report) = read_report(&result) else {
+        return Err(SandboxError::Launch(if timed_out {
+            "the Sandboxie watcher was stopped before it wrote a report".to_string()
+        } else {
+            "the Sandboxie watcher finished without writing a report".to_string()
+        }));
+    };
     let dropped = dropped_files(&dropped_dir);
 
     let mut caveats = vec![

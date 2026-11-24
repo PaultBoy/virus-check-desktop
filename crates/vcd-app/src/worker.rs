@@ -18,7 +18,6 @@ use vcd_core::{
 pub enum Command {
     ScanFile(PathBuf),
     ScanFolder(PathBuf),
-    Cancel,
     Detonate(PathBuf, DetonateOptions, Backend),
     InstallClamav,
 }
@@ -46,6 +45,7 @@ pub enum Event {
 pub struct Worker {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -60,6 +60,7 @@ impl Worker {
         Self {
             commands: command_tx,
             events: event_rx,
+            cancel,
         }
     }
 
@@ -67,8 +68,10 @@ impl Worker {
         let _ = self.commands.send(command);
     }
 
+    /// Set from the UI thread. Queueing a command would only be read after the
+    /// scan it is meant to interrupt has already finished.
     pub fn cancel(&self) {
-        self.send(Command::Cancel);
+        self.cancel.store(true, Ordering::SeqCst);
     }
 
     pub fn try_recv(&self) -> Option<Event> {
@@ -81,7 +84,6 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
 
     while let Ok(command) = commands.recv() {
         match command {
-            Command::Cancel => cancel.store(true, Ordering::SeqCst),
             Command::InstallClamav => {
                 let mut progress = |step: InstallStep| {
                     let _ = events.send(Event::ClamavProgress(step));

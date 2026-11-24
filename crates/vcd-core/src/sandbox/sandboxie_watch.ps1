@@ -41,11 +41,27 @@ if (Test-Path $BoxRoot) {
     }
 }
 
+# `-ArgumentList` joins its elements with spaces, so the sample path has to be
+# quoted here or a profile like "C:\Users\John Smith" is split apart and
+# Start.exe never finds the file.
 try {
-    Start-Process -FilePath $StartExe -ArgumentList "/box:$Box", '/silent', $Sample | Out-Null
-    $state.executed = $true
+    Start-Process -FilePath $StartExe -ArgumentList @("/box:$Box", '/silent', "`"$Sample`"") | Out-Null
 } catch {
     $state.error = $_.Exception.Message
+}
+
+# `executed` means the sample really started inside the box, not that Start.exe
+# was spawned: wait for a new process whose image is the sample.
+$launchDeadline = (Get-Date).AddSeconds(5)
+while (-not $state.executed -and (Get-Date) -lt $launchDeadline) {
+    foreach ($process in Get-CimInstance Win32_Process) {
+        if ($beforePids.ContainsKey([int]$process.ProcessId)) { continue }
+        if ($process.ExecutablePath -eq $Sample) { $state.executed = $true; break }
+    }
+    if (-not $state.executed) { Start-Sleep -Milliseconds 200 }
+}
+if (-not $state.executed -and -not $state.error) {
+    $state.error = 'the sample did not start inside the box'
 }
 
 $seen = @{}

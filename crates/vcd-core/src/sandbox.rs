@@ -14,7 +14,7 @@
 //!   unsupported instead of faking a detonation.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -33,11 +33,18 @@ const SESSION_IMAGES: [&str; 2] = [
     "WindowsSandboxServer.exe",
 ];
 
+/// The guest writes `out/result.json` and `out` is mapped writable, so the
+/// report is hostile input: a huge one must not take the host down with it.
+const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_REPORT_ENTRIES: usize = 10_000;
+
 #[derive(Debug, Clone)]
 pub struct DetonateOptions {
     /// How long the sample is allowed to run inside the sandbox.
     pub duration: Duration,
-    /// Wall clock for boot, run and collection.
+    /// Wall clock for boot, run and collection. Sandboxie never waits less than
+    /// `duration + 30 s`, because it still has to boot the box and drain
+    /// telemetry after the sample is done.
     pub timeout: Duration,
     pub network: bool,
 }
@@ -189,7 +196,12 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
         .spawn()
         .map_err(|error| SandboxError::Launch(error.to_string()))?;
 
-    wait_for_session(&known_sessions)?;
+    // Every exit path from here on has to take the VM down: the guest's own
+    // `Stop-Computer` is not a guarantee.
+    let guard = SessionGuard {
+        known: known_sessions,
+    };
+    wait_for_session(&guard.known)?;
 
     let result_path = out.join("result.json");
     let deadline = Instant::now() + options.timeout;
@@ -207,7 +219,7 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
 
     let timed_out = report.is_none();
     if timed_out {
-        stop_new_sessions(&known_sessions);
+        stop_new_sessions(&guard.known);
         // Whatever the guest managed to write before we pulled the plug.
         report = read_report(&result_path);
     }
@@ -321,11 +333,28 @@ fn wsb_config(payload: &Path, out: &Path, network: bool) -> String {
 }
 
 pub(crate) fn read_report(path: &Path) -> Option<SandboxReport> {
-    let text = fs::read_to_string(path).ok()?;
+    // `out` is writable from inside the guest, so the report is hostile input:
+    // an oversized one must not take the host down with it.
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_REPORT_BYTES {
+        return None;
+    }
+
+    let mut text = String::new();
+    let mut handle = file.take(MAX_REPORT_BYTES);
+    handle.read_to_string(&mut text).ok()?;
     // Windows PowerShell 5.1 writes UTF-8 with a BOM unless told otherwise, and
     // older builds of the guest script did exactly that.
     let text = text.trim_start_matches('\u{feff}');
-    serde_json::from_str(text).ok()
+
+    let mut report: SandboxReport = serde_json::from_str(text).ok()?;
+    report.processes.truncate(MAX_REPORT_ENTRIES);
+    report.connections.truncate(MAX_REPORT_ENTRIES);
+    report.dns.truncate(MAX_REPORT_ENTRIES);
+    report.files_created.truncate(MAX_REPORT_ENTRIES);
+    report.files_modified.truncate(MAX_REPORT_ENTRIES);
+    report.registry_changed.truncate(MAX_REPORT_ENTRIES);
+    Some(report)
 }
 
 fn dropped_files(directory: &Path) -> Vec<PathBuf> {
@@ -354,6 +383,18 @@ fn wait_for_session(known: &[(String, u32)]) -> Result<(), SandboxError> {
     Err(SandboxError::Launch(
         "no Windows Sandbox session appeared within 45 s".to_string(),
     ))
+}
+
+/// Kills the session and the VM behind it on every exit path, including the one
+/// where the session never appeared.
+struct SessionGuard {
+    known: Vec<(String, u32)>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        stop_new_sessions(&self.known);
+    }
 }
 
 /// Kill the session *and* the server that keeps the VM alive: killing only the
@@ -443,5 +484,40 @@ mod tests {
         .expect_err("missing sample");
 
         assert!(matches!(error, SandboxError::Io(_)));
+    }
+
+    fn report_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vcd-report-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn a_complete_report_round_trips() {
+        let path = report_path("ok");
+        fs::write(&path, r#"{"executed":true,"finished":true,"processes":[]}"#)
+            .expect("write report");
+
+        let report = read_report(&path).expect("parse report");
+        assert!(report.executed);
+        assert!(report.finished);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_oversized_report_is_rejected_instead_of_parsed() {
+        let path = report_path("huge");
+        let padding = "a".repeat(MAX_REPORT_BYTES as usize + 1);
+        fs::write(&path, format!(r#"{{"error":"{padding}"}}"#)).expect("write report");
+
+        assert!(read_report(&path).is_none());
+
+        let _ = fs::remove_file(&path);
     }
 }

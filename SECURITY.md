@@ -13,8 +13,8 @@ reproduce, and the observed effect.
 ## What the tool promises
 
 - It never uploads a scanned file. All engines are local.
-- It never executes a sample unless `vcd detonate` (or the Detonate button) is
-  invoked explicitly.
+- It never executes a sample unless `vcd detonate` or the **Load in a sandbox…**
+  action in the desktop app is invoked explicitly.
 - `clamscan`/`clamdscan` and `MpCmdRun` run with no remediation: the tool does
   not quarantine, delete or modify the files it scans.
 - The prepare/scan pipeline opens files read-only.

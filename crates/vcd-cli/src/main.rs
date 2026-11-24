@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use vcd_core::{
     Backend, Coverage, DetonateOptions, Detonation, DirectoryReport, EngineReport, EngineStatus,
-    ScanReport, ScanScope, Scanner, Verdict, clamav_portable_root, detect_support, detonate_with,
+    ScanReport, ScanScope, Scanner, Verdict, clamav_status, detect_support, detonate_with,
     enable_windows_sandbox, install_portable_clamav,
 };
 
@@ -59,19 +59,16 @@ fn clamav_command(args: &[String]) -> ExitCode {
             }
         },
         Some("status") | None => {
-            match clamav_portable_root() {
+            let status = clamav_status();
+
+            match &status.portable {
                 Some(root) => println!("Portable install  {}", root.display()),
                 None => println!("Portable install  not installed (run: vcd clamav install)"),
             }
 
-            let system = Path::new(r"C:\Program Files\ClamAV\clamscan.exe");
-            if system.is_file() {
-                println!(
-                    "System install    {}",
-                    system.parent().unwrap_or(system).display()
-                );
-            } else {
-                println!("System install    not found");
+            match &status.system {
+                Some(root) => println!("System install    {}", root.display()),
+                None => println!("System install    not found"),
             }
 
             ExitCode::SUCCESS
@@ -168,10 +165,12 @@ fn detonate_command(args: &[String]) -> ExitCode {
             "--backend" => {
                 index += 1;
                 backend = match args.get(index).map(String::as_str) {
-                    Some("windows") | Some("sandbox") => Some(Backend::WindowsSandbox),
+                    Some("windows") => Some(Backend::WindowsSandbox),
                     Some("sandboxie") => Some(Backend::Sandboxie),
                     _ => {
-                        eprintln!("error: --backend expects 'windows' or 'sandboxie'");
+                        eprintln!(
+                            "error: --backend expects 'windows' (virtual machine) or 'sandboxie' (shared kernel)"
+                        );
                         return ExitCode::from(2);
                     }
                 };
@@ -187,8 +186,12 @@ fn detonate_command(args: &[String]) -> ExitCode {
                     ("--timeout", Some(seconds)) if (30..=900).contains(&seconds) => {
                         options.timeout = Duration::from_secs(seconds);
                     }
+                    ("--duration", _) => {
+                        eprintln!("error: --duration expects 1 to 300 seconds");
+                        return ExitCode::from(2);
+                    }
                     _ => {
-                        eprintln!("error: {flag} needs a number of seconds in range");
+                        eprintln!("error: --timeout expects 30 to 900 seconds");
                         return ExitCode::from(2);
                     }
                 }
@@ -199,6 +202,15 @@ fn detonate_command(args: &[String]) -> ExitCode {
             }
         }
         index += 1;
+    }
+
+    if options.timeout <= options.duration {
+        eprintln!(
+            "error: --timeout ({} s) must be greater than --duration ({} s): booting and collecting happen inside it",
+            options.timeout.as_secs(),
+            options.duration.as_secs()
+        );
+        return ExitCode::from(2);
     }
 
     let support = detect_support();
@@ -225,7 +237,11 @@ fn detonate_command(args: &[String]) -> ExitCode {
                 print_detonation(&report);
             }
 
-            if report.error.is_some() {
+            // A run that was stopped before the sample started collected
+            // nothing; exiting 0 would read as success to a script.
+            let collected_nothing =
+                !report.executed && report.timed_out && report.unsupported.is_none();
+            if report.error.is_some() || collected_nothing {
                 ExitCode::from(2)
             } else {
                 ExitCode::SUCCESS
@@ -242,8 +258,7 @@ fn print_detonation(report: &Detonation) {
     println!("Sample     {}", report.sample.display());
     println!("Backend    {}", report.backend.as_str());
     println!(
-        "Sandbox    {}, networking {}",
-        report.backend.as_str(),
+        "Networking {}",
         if report.network_enabled {
             "enabled"
         } else {
@@ -404,8 +419,12 @@ fn scan_command(args: &[String]) -> ExitCode {
 
             if matches!(report.verdict, Verdict::Malicious | Verdict::Suspicious) {
                 ExitCode::from(1)
-            } else {
+            } else if matches!(report.verdict, Verdict::Undetected) {
                 ExitCode::SUCCESS
+            } else {
+                // Inconclusive: nothing proved this file clean, so exit 0 would
+                // read as "no threat" to a script.
+                ExitCode::from(2)
             }
         }
         Err(error) => {
@@ -518,6 +537,10 @@ fn findings_line(file: &ScanReport) -> String {
 fn tree_exit_code(report: &DirectoryReport) -> ExitCode {
     if report.summary.malicious + report.summary.suspicious > 0 {
         ExitCode::from(1)
+    } else if report.summary.inconclusive + report.summary.unknown + report.summary.errors > 0 {
+        // A tree nobody could conclude on, or with unreadable files, is not a
+        // clean tree.
+        ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     }

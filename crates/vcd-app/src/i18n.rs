@@ -266,8 +266,8 @@ impl Strings {
 
     pub fn detonation_only(&self) -> &'static str {
         self.pick(
-            "detonation applies to executable and script types only",
-            "la detonación aplica solo a ejecutables y scripts",
+            "the sandbox launches the file as it is, so it needs an executable or script name (.exe, .bat, .ps1, …)",
+            "el sandbox lanza el archivo tal cual, así que necesita un nombre de ejecutable o script (.exe, .bat, .ps1, …)",
         )
     }
 
@@ -363,17 +363,15 @@ impl Strings {
     }
 
     pub fn install_step(&self, step: InstallStep) -> &'static str {
-        match (self.lang, step) {
-            (Lang::En, InstallStep::Downloading) => "Downloading ClamAV (about 214 MB)…",
-            (Lang::En, InstallStep::Extracting) => "Extracting without installing…",
-            (Lang::En, InstallStep::Updating) => {
-                "Downloading the signature database (about 300 MB)…"
-            }
-            (Lang::En, InstallStep::Ready) => "ClamAV is ready",
-            (Lang::Es, InstallStep::Downloading) => "Descargando ClamAV (unos 214 MB)…",
-            (Lang::Es, InstallStep::Extracting) => "Extrayendo sin instalar…",
-            (Lang::Es, InstallStep::Updating) => "Descargando la base de firmas (unos 300 MB)…",
-            (Lang::Es, InstallStep::Ready) => "ClamAV está listo",
+        match self.lang {
+            // English lives in core, so the CLI prints the same sentences.
+            Lang::En => step.english(),
+            Lang::Es => match step {
+                InstallStep::Downloading => "Descargando ClamAV (unos 214 MB)…",
+                InstallStep::Extracting => "Extrayendo sin instalar…",
+                InstallStep::Updating => "Descargando la base de firmas (unos 300 MB)…",
+                InstallStep::Ready => "ClamAV está listo",
+            },
         }
     }
 }
@@ -386,7 +384,18 @@ mod tests {
     fn every_language_produces_every_verdict() {
         for lang in [Lang::En, Lang::Es] {
             let strings = Strings { lang };
-            assert!(!strings.verdict(Verdict::Malicious).is_empty());
+            for verdict in [
+                Verdict::Malicious,
+                Verdict::Suspicious,
+                Verdict::Undetected,
+                Verdict::Inconclusive,
+                Verdict::Unknown,
+            ] {
+                assert!(
+                    !strings.verdict(verdict).is_empty(),
+                    "{verdict:?} in {lang:?}"
+                );
+            }
             assert_eq!(
                 strings.verdict(Verdict::Undetected),
                 match lang {
@@ -399,9 +408,21 @@ mod tests {
 
     #[test]
     fn the_summary_is_translated_not_just_formatted() {
+        let summary = Summary {
+            files: 3,
+            malicious: 1,
+            suspicious: 0,
+            undetected: 2,
+            inconclusive: 0,
+            unknown: 0,
+            errors: 0,
+            duration_ms: 1_500,
+        };
+
         let en = Strings { lang: Lang::En };
         let es = Strings { lang: Lang::Es };
-        assert!(en.local_only().contains("nothing is uploaded"));
-        assert!(es.local_only().contains("no se sube nada"));
+        assert!(en.summary(&summary, 1.5).contains("3 files"));
+        assert!(es.summary(&summary, 1.5).contains("3 archivos"));
+        assert_ne!(en.summary(&summary, 1.5), es.summary(&summary, 1.5));
     }
 }

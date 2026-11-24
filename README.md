@@ -39,9 +39,10 @@ vcd scan .\samples\        # whole tree, one ClamAV database load for all files
   budget; a large native image with no imports is flagged.
 - Runs ClamAV in process through `libclamav.dll` for directory scans (the
   database loads once, ~3.6 M signatures, every file after that is a function
-  call) and through `clamscan` for a single file. Reports a file above ClamAV's
-  2 GiB cap as unscanned rather than clean. `vcd clamav install` sets it up
-  without an administrator.
+  call) and through `clamscan` for a single file, with explicit size and time
+  limits. Reports a file above ClamAV's 2 GiB cap, or content ClamAV skipped for
+  its own limits, as partial coverage rather than clean. `vcd clamav install`
+  sets it up without an administrator and verifies the pinned MSI digest.
 - Runs Microsoft Defender's command line scanner with `-DisableRemediation`, so
   a scan never quarantines or deletes the user's files.
 - Matches YARA rules in process through YARA-X: two built-in rules (EICAR and
@@ -53,7 +54,8 @@ vcd scan .\samples\        # whole tree, one ClamAV database load for all files
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
-Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed.
+Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed or
+inconclusive.
 
 `--json` prints the same report as machine-readable JSON.
 
@@ -97,8 +99,8 @@ cargo run -p vcd-app --release
 
 or run `target/release/virus-check-desktop.exe` (single file, no runtime to
 install). Drag a file or a folder onto the window, or use the buttons. The
-window never scans on the UI thread: a worker owns the engines, so the ClamAV
-daemon stays warm and the list fills as files finish. Selecting a row shows the
+window never scans on the UI thread: a worker owns the engines, so they are
+built once and the list fills as files finish. Selecting a row shows the
 hashes, per-engine facts and findings; **Copy JSON** exports that report. If
 ClamAV is missing, the app opens a setup dialog that installs it into the user
 profile with visible progress and no administrator prompt. The interface follows
@@ -141,9 +143,10 @@ workspace (its path is reported) when you are done with the samples.
 
 - `crates/vcd-core` — streaming hashes, content typing, PE and import analysis,
   the engines (content-type, pe-structure, defender, yara, clamav), the
-  coverage/verdict model, directory scanning and both detonation backends.- `crates/vcd-cli` — `vcd`: `scan`, `detonate`, `sandbox`.
+  coverage/verdict model, directory scanning and both detonation backends.
+- `crates/vcd-cli` — `vcd`: `scan`, `detonate`, `sandbox`, `clamav`.
 - `crates/vcd-app` — the egui desktop shell. A worker thread owns the scanner so
-  the ClamAV daemon stays warm and the window never blocks.
+  engines are built once and the window never blocks.
 
 ## Design rule
 

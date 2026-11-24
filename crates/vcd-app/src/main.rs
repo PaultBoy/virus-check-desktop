@@ -287,8 +287,6 @@ impl App {
             .send(Command::Detonate(path, DetonateOptions::default(), backend));
     }
 
-    /// Setup prompt shown over the window when ClamAV is missing. It replaces
-    /// the old toolbar button: one decision, explained, with its cost.
     /// Backend choice for detonation, shown over the window when the sample is
     /// about to be loaded. The recommended backend is labelled as such.
     fn sandbox_dialog(&mut self, ctx: &egui::Context) {
@@ -404,6 +402,8 @@ impl App {
         }
     }
 
+    /// Setup prompt shown over the window when ClamAV is missing: one decision,
+    /// explained, with its cost.
     fn clamav_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_clamav_prompt {
             return;
@@ -976,7 +976,14 @@ fn severity_color(severity: Severity) -> Color32 {
 fn coverage_text(coverage: &Coverage) -> String {
     match coverage {
         Coverage::Complete => "coverage: complete".to_string(),
-        Coverage::Partial { reason, .. } => format!("coverage: partial ({reason})"),
+        // Without the byte count, "partial" cannot be told apart from "nothing".
+        Coverage::Partial {
+            scanned_bytes,
+            reason,
+        } => format!(
+            "coverage: partial ({} scanned, {reason})",
+            human_size(*scanned_bytes)
+        ),
         Coverage::None { reason } => format!("coverage: none ({reason})"),
     }
 }
