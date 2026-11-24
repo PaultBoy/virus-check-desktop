@@ -4,8 +4,9 @@
 //! so a single-file scan costs tens of milliseconds. Two facts shape this
 //! engine:
 //!
-//! - Only the exit code is a stable contract (0 = no threats, 2 = threats
-//!   found); the summary text is human-facing.
+//! - The exit code is the stable contract (0 = no threats, 2 = a threat or an
+//!   error); the summary text is human-facing, so the `hr = 0x…` line decides
+//!   which of the two a 2 means.
 //! - `-DisableRemediation` is always passed: a scanner that deletes the user's
 //!   files is not a scanner.
 //!
@@ -65,8 +66,19 @@ impl Engine for DefenderEngine {
         let started = Instant::now();
         let output_path = temp_output_path();
         let outcome = run_scan(executable, target.path, &output_path);
-        let stdout = read_text(&output_path).unwrap_or_default();
+        let stdout = read_text(&output_path);
         let _ = std::fs::remove_file(&output_path);
+
+        // Exit 0 with output we could not read is not a clean scan.
+        let stdout = match stdout {
+            Ok(text) => text,
+            Err(error) => {
+                return EngineReport::failed(
+                    self.name(),
+                    format!("cannot read MpCmdRun's output: {error}"),
+                );
+            }
+        };
 
         let exit_code = match outcome {
             Ok(code) => code,
@@ -97,7 +109,7 @@ fn classify(engine: &str, exit_code: i32, stdout: &str, duration: Duration) -> E
     match exit_code {
         0 => EngineReport::completed(engine, Vec::new(), Coverage::Complete, duration)
             .with_facts(facts),
-        EXIT_THREATS_FOUND => EngineReport::completed(
+        EXIT_THREATS_FOUND if !looks_like_error(stdout) => EngineReport::completed(
             engine,
             vec![Detection {
                 name: "defender-detection".to_string(),
@@ -108,11 +120,21 @@ fn classify(engine: &str, exit_code: i32, stdout: &str, duration: Duration) -> E
             duration,
         )
         .with_facts(facts),
+        EXIT_THREATS_FOUND => EngineReport::failed(
+            engine,
+            format!("MpCmdRun reported an error instead of a scan result: {evidence}"),
+        ),
         other => EngineReport::failed(
             engine,
             format!("MpCmdRun exited with code {other}: {evidence}"),
         ),
     }
+}
+
+/// `MpCmdRun` returns 2 for a detection *and* for its own failures. The HRESULT
+/// line is the error shape; a real detection carries a `Threat` line instead.
+fn looks_like_error(stdout: &str) -> bool {
+    stdout.contains("hr = 0x") || stdout.contains("Failed with hr")
 }
 
 /// `Threat                  : Virus:DOS/EICAR_Test_File` -> the signature.
@@ -158,12 +180,15 @@ fn run_scan(executable: &Path, target: &Path, output: &Path) -> Result<i32, RunE
     // undrained pipe can never deadlock the child.
     let sink = File::create(output).map_err(RunError::Io)?;
 
+    // An absolute path can never be read as an option.
+    let target = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
+
     let mut child = Command::new(executable)
         .arg("-Scan")
         .arg("-ScanType")
         .arg("3")
         .arg("-File")
-        .arg(target)
+        .arg(&target)
         .arg("-DisableRemediation")
         .stdin(Stdio::null())
         .stdout(Stdio::from(sink))
@@ -301,6 +326,18 @@ Resources               : 2 total
         let report = classify("defender", 1, "", Duration::ZERO);
 
         assert!(matches!(report.status, EngineStatus::Failed { .. }));
+    }
+
+    #[test]
+    fn an_hresult_error_with_exit_two_is_a_failure_not_a_detection() {
+        // Captured from a real run on this machine: MpCmdRun exits 2 when it
+        // cannot scan, and exit 2 was being read as a detection.
+        let captured = "CmdTool: Failed with hr = 0x80508023. Check \
+                        C:\\Users\\x\\AppData\\Local\\Temp\\MpCmdRun.log for more information\r\n";
+        let report = classify("defender", 2, captured, Duration::from_millis(58));
+
+        assert!(matches!(report.status, EngineStatus::Failed { .. }));
+        assert!(report.detections.is_empty());
     }
 
     #[test]

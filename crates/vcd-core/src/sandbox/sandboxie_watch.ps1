@@ -51,12 +51,18 @@ try {
 }
 
 # `executed` means the sample really started inside the box, not that Start.exe
-# was spawned: wait for a new process whose image is the sample.
+# was spawned. It cannot be an image match: `.bat`, `.ps1` and `.vbs` run through
+# an interpreter, so the sample appears in the command line instead.
 $launchDeadline = (Get-Date).AddSeconds(5)
 while (-not $state.executed -and (Get-Date) -lt $launchDeadline) {
     foreach ($process in Get-CimInstance Win32_Process) {
         if ($beforePids.ContainsKey([int]$process.ProcessId)) { continue }
-        if ($process.ExecutablePath -eq $Sample) { $state.executed = $true; break }
+        $image = $process.ExecutablePath
+        $command = $process.CommandLine
+        if ($image -eq $Sample -or ($command -and $command.Contains($Sample))) {
+            $state.executed = $true
+            break
+        }
     }
     if (-not $state.executed) { Start-Sleep -Milliseconds 200 }
 }

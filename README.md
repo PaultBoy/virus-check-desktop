@@ -54,8 +54,8 @@ vcd scan .\samples\        # whole tree, one ClamAV database load for all files
 - Reports per-engine coverage, so a skipped range can never hide behind a
   quiet verdict.
 
-Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` scan failed or
-inconclusive.
+Exit codes: `0` nothing detected, `1` malicious or suspicious, `2` an engine
+failed, content was skipped, or a file could not be read.
 
 `--json` prints the same report as machine-readable JSON.
 

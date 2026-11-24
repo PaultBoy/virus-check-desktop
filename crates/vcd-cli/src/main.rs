@@ -1,7 +1,8 @@
 //! `vcd` — local file triage.
 //!
 //! Exit codes: `0` nothing detected, `1` malicious or suspicious finding,
-//! `2` the scan itself failed.
+//! `2` the scan could not inspect what it was given: an engine failed, content
+//! was skipped, or a file could not be read.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -419,12 +420,10 @@ fn scan_command(args: &[String]) -> ExitCode {
 
             if matches!(report.verdict, Verdict::Malicious | Verdict::Suspicious) {
                 ExitCode::from(1)
-            } else if matches!(report.verdict, Verdict::Undetected) {
-                ExitCode::SUCCESS
-            } else {
-                // Inconclusive: nothing proved this file clean, so exit 0 would
-                // read as "no threat" to a script.
+            } else if could_not_conclude(&report) {
                 ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
             }
         }
         Err(error) => {
@@ -537,13 +536,29 @@ fn findings_line(file: &ScanReport) -> String {
 fn tree_exit_code(report: &DirectoryReport) -> ExitCode {
     if report.summary.malicious + report.summary.suspicious > 0 {
         ExitCode::from(1)
-    } else if report.summary.inconclusive + report.summary.unknown + report.summary.errors > 0 {
-        // A tree nobody could conclude on, or with unreadable files, is not a
-        // clean tree.
+    } else if report.files.iter().any(could_not_conclude) || !report.errors.is_empty() {
+        // A tree with an engine failure, content nobody inspected, or files
+        // that could not be read is not a clean tree.
         ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// A missing optional engine leaves the verdict inconclusive but is not a
+/// failure: the engines that are installed inspected everything they own. An
+/// engine that failed, or one that inspected zero bytes of the target, is.
+fn could_not_conclude(report: &ScanReport) -> bool {
+    report.engines.iter().any(|engine| {
+        matches!(engine.status, EngineStatus::Failed { .. })
+            || matches!(
+                engine.coverage,
+                Coverage::Partial {
+                    scanned_bytes: 0,
+                    ..
+                }
+            )
+    })
 }
 
 fn print_detections(engine: &EngineReport) {
@@ -624,6 +639,6 @@ Usage:
 Exit codes:
   0  nothing detected
   1  malicious or suspicious finding
-  2  the scan itself failed"
+  2  an engine failed, content was skipped, or a file could not be read"
     );
 }

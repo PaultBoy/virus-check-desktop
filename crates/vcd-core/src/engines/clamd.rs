@@ -7,9 +7,10 @@
 //! - config and logs under `%LOCALAPPDATA%\VirusCheckDesktop\clamav`;
 //! - a fixed loopback port, so a daemon left behind by a previous run is
 //!   reused instead of piling up;
-//! - a pid marker file records that *we* started it, which is what lets a
-//!   later run adopt and stop an orphan;
-//! - dropping the handle stops the daemon it started.
+//! - a later run adopts a listener only when `clamd.pid` names a live `clamd.exe`
+//!   that also answers `clamdscan --ping`; anything else holding the port is
+//!   refused and the engine falls back to `clamscan` with the reason recorded;
+//! - dropping the handle stops the daemon this run started or verified.
 
 use std::fs;
 use std::io::Write;
@@ -114,10 +115,6 @@ fn find_binary(name: &str, install: &Path) -> Option<PathBuf> {
 pub(crate) struct ClamDaemon {
     config: PathBuf,
     child: Option<Child>,
-    /// True when this run is responsible for stopping the daemon, either
-    /// because it started one or because the marker file shows an earlier run
-    /// did.
-    owned: bool,
 }
 
 impl ClamDaemon {
@@ -128,28 +125,27 @@ impl ClamDaemon {
             .map_err(|error| format!("cannot create {work_dir:?}: {error}"))?;
 
         let config = work_dir.join("clamd.conf");
-        let marker = work_dir.join("owner.pid");
         write_config(&config, database, &work_dir)?;
 
         if port_is_open() {
             // A listener on our port is only ours if the PID it published is a
-            // clamd. Otherwise anything resident could answer "OK" for every
-            // file and the report would call it clean.
-            if !listener_is_our_daemon(&work_dir) {
+            // clamd that also speaks the protocol. Otherwise anything resident
+            // could answer "OK" for every file and the report would call it
+            // clean.
+            if !listener_is_our_daemon(&work_dir, &config) {
                 return Err(format!(
                     "port {DAEMON_PORT} is in use by a process that is not this ClamAV daemon; refusing to trust it"
                 ));
             }
 
-            // We started it in a previous run; keep ownership so it can be
-            // stopped at the end of this one.
-            let _ = fs::write(&marker, std::process::id().to_string());
             return Ok(Self {
                 config,
                 child: None,
-                owned: true,
             });
         }
+
+        // A pid file left by a crash would let a recycled PID pass the check.
+        let _ = fs::remove_file(work_dir.join(PID_FILE));
 
         let log = work_dir.join("clamd.log");
         let sink = fs::File::create(&log).map_err(|error| format!("cannot create log: {error}"))?;
@@ -169,11 +165,9 @@ impl ClamDaemon {
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             if port_is_open() {
-                let _ = fs::write(&marker, std::process::id().to_string());
                 return Ok(Self {
                     config,
                     child: Some(child),
-                    owned: true,
                 });
             }
 
@@ -202,10 +196,6 @@ impl ClamDaemon {
 
 impl Drop for ClamDaemon {
     fn drop(&mut self) {
-        if !self.owned {
-            return;
-        }
-
         // Ask politely first, then make sure the child is gone.
         let stopped = Command::new(clamdscan_path())
             .arg("-c")
@@ -222,10 +212,9 @@ impl Drop for ClamDaemon {
             let _ = child.wait();
         }
 
-        // Keep the marker when the daemon refused to stop: the next run still
-        // owns it and has to be able to say so.
+        // A stale pid file would let a recycled PID pass the ownership check.
         if stopped || !port_is_open() {
-            let _ = fs::remove_file(work_dir().join("owner.pid"));
+            let _ = fs::remove_file(work_dir().join(PID_FILE));
         }
     }
 }
@@ -253,9 +242,9 @@ fn port_is_open() -> bool {
     addresses.any(|address| TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok())
 }
 
-/// The daemon writes its own PID to `clamd.pid`; our marker alone proves
-/// nothing, because any process can hold the port.
-fn listener_is_our_daemon(work_dir: &Path) -> bool {
+/// The daemon writes its own PID to `clamd.pid`, and any process can hold the
+/// port: both signals have to agree before a listener is trusted.
+fn listener_is_our_daemon(work_dir: &Path, config: &Path) -> bool {
     let Ok(text) = fs::read_to_string(work_dir.join(PID_FILE)) else {
         return false;
     };
@@ -263,7 +252,24 @@ fn listener_is_our_daemon(work_dir: &Path) -> bool {
         return false;
     };
 
-    process_image_name(pid).is_some_and(|name| name.eq_ignore_ascii_case("clamd.exe"))
+    let is_clamd =
+        process_image_name(pid).is_some_and(|name| name.eq_ignore_ascii_case("clamd.exe"));
+
+    is_clamd && ping_daemon(config)
+}
+
+/// `clamdscan --ping` is a protocol check, not a port check: a squatter that
+/// does not speak clamd fails it.
+fn ping_daemon(config: &Path) -> bool {
+    Command::new(clamdscan_path())
+        .arg("-c")
+        .arg(config)
+        .arg("--ping")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn process_image_name(pid: u32) -> Option<String> {
@@ -297,6 +303,7 @@ TCPSocket {}
 TCPAddr 127.0.0.1
 MaxFileSize {}M
 MaxScanSize {}M
+MaxScanTime 600000
 MaxFiles 10000
 MaxRecursion 17
 MaxThreads 2

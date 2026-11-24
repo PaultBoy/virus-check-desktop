@@ -196,12 +196,22 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
         .spawn()
         .map_err(|error| SandboxError::Launch(error.to_string()))?;
 
-    // Every exit path from here on has to take the VM down: the guest's own
-    // `Stop-Computer` is not a guarantee.
+    // Only the session this run launched may be torn down: another process (or
+    // another app window) can have its own Windows Sandbox running at the same
+    // time. The guard covers every exit path after the session is identified.
+    let session = match wait_for_session(&known_sessions) {
+        Ok(session) => session,
+        Err(error) => {
+            // Nothing matched, but the launch was ours: stop whatever appeared
+            // rather than leave a VM running a sample nobody is watching.
+            stop_new_sessions(&known_sessions);
+            return Err(error);
+        }
+    };
     let guard = SessionGuard {
+        session,
         known: known_sessions,
     };
-    wait_for_session(&guard.known)?;
 
     let result_path = out.join("result.json");
     let deadline = Instant::now() + options.timeout;
@@ -219,7 +229,7 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
 
     let timed_out = report.is_none();
     if timed_out {
-        stop_new_sessions(&guard.known);
+        stop_session(&guard.session, &guard.known);
         // Whatever the guest managed to write before we pulled the plug.
         report = read_report(&result_path);
     }
@@ -367,15 +377,15 @@ fn dropped_files(directory: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn wait_for_session(known: &[(String, u32)]) -> Result<(), SandboxError> {
+fn wait_for_session(known: &[(String, u32)]) -> Result<u32, SandboxError> {
     let deadline = Instant::now() + Duration::from_secs(45);
 
     while Instant::now() < deadline {
-        let appeared = sandbox_processes().iter().any(|(name, pid)| {
-            name == SESSION_IMAGES[0] && !known.iter().any(|(_, known)| known == pid)
+        let appeared = sandbox_processes().into_iter().find(|(name, pid)| {
+            name.as_str() == SESSION_IMAGES[0] && !known.iter().any(|(_, known)| known == pid)
         });
-        if appeared {
-            return Ok(());
+        if let Some((_, pid)) = appeared {
+            return Ok(pid);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -385,20 +395,35 @@ fn wait_for_session(known: &[(String, u32)]) -> Result<(), SandboxError> {
     ))
 }
 
-/// Kills the session and the VM behind it on every exit path, including the one
-/// where the session never appeared.
+/// Tears down the one session this run launched, on every exit path.
 struct SessionGuard {
+    session: u32,
     known: Vec<(String, u32)>,
 }
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        stop_new_sessions(&self.known);
+        stop_session(&self.session, &self.known);
     }
 }
 
-/// Kill the session *and* the server that keeps the VM alive: killing only the
-/// session leaves `WindowsSandboxServer` and the VM behind.
+/// Kill our session tree, and the server behind it only when no other session is
+/// running: a concurrent detonation owns its own VM.
+fn stop_session(session: &u32, known: &[(String, u32)]) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &session.to_string(), "/T", "/F"])
+        .output();
+
+    let another_session = sandbox_processes()
+        .iter()
+        .any(|(name, _)| name.as_str() == SESSION_IMAGES[0]);
+
+    if !another_session {
+        stop_new_sessions(known);
+    }
+}
+
+/// Kill every session that appeared after `known`, plus the servers behind them.
 fn stop_new_sessions(known: &[(String, u32)]) {
     for (name, pid) in sandbox_processes() {
         if known

@@ -9,10 +9,11 @@
 //!    the signature database loads once instead of per file.
 //! 3. One `clamscan` process per file, with explicit size and time limits.
 //!
-//! ClamAV's own CLI defaults skip files above ~100 MiB and still exit 0, so the
-//! limits are passed explicitly and a skipped file is reported as partial
-//! coverage. Its per-file cap is [`Coverage`]: a 3 GiB file that ClamAV refused
-//! to open must not look clean.
+//! ClamAV's own defaults skip files above ~100 MiB and still exit 0, so the
+//! per-file command states its limits and the managed daemon gets them in its
+//! config; content a limit stopped is reported as partial coverage. Its per-file
+//! cap is [`Coverage`]: a 3 GiB file that ClamAV refused to open must not look
+//! clean.
 
 use std::ffi::OsString;
 use std::fs::File;
