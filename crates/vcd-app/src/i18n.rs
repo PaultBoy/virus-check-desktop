@@ -333,15 +333,8 @@ impl Strings {
 
     pub fn installing_sandboxie(&self) -> &'static str {
         self.pick(
-            "waiting for the administrator prompt and downloading Sandboxie-Plus (about 25 MB)…",
-            "esperando la solicitud de administrador y descargando Sandboxie-Plus (unos 25 MB)…",
-        )
-    }
-
-    pub fn sandboxie_install_notice(&self) -> &'static str {
-        self.pick(
-            "accept the administrator prompt. When the installer finishes, load the sample in a sandbox again and the new backend will be listed.",
-            "acepta la solicitud de administrador. Cuando termine el instalador, vuelve a cargar la muestra en un aislamiento y aparecerá el nuevo backend.",
+            "installing Sandboxie-Plus (about 25 MB)…",
+            "instalando Sandboxie-Plus (unos 25 MB)…",
         )
     }
 
@@ -412,8 +405,6 @@ mod tests {
 
         assert_eq!(en.install_sandboxie(), "Install Sandboxie-Plus…");
         assert_eq!(es.install_sandboxie(), "Instalar Sandboxie-Plus…");
-        assert!(en.sandboxie_install_notice().contains("administrator"));
-        assert!(es.sandboxie_install_notice().contains("administrador"));
         assert_ne!(en.installing_sandboxie(), es.installing_sandboxie());
     }
 

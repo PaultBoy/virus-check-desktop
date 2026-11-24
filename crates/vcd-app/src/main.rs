@@ -238,14 +238,12 @@ impl App {
                     self.sandbox_error = Some(error.clone());
                     self.failure = Some(error);
                 }
-                Event::SandboxieInstallLaunched => {
+                Event::SandboxieInstalled => {
                     self.installing_sandboxie = false;
+                    // The install finished, so the open dialog can list the new
+                    // backend on its next frame.
                     self.support = detect_support();
-                    // The dialog cannot see the wizard finish, so close it and
-                    // let the notice explain what to do next.
-                    self.show_sandbox_prompt = false;
                     self.sandbox_error = None;
-                    self.notice = Some(self.strings.sandboxie_install_notice().to_string());
                 }
                 Event::SandboxieInstallFailed(error) => {
                     self.installing_sandboxie = false;

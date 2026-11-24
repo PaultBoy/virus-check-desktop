@@ -69,7 +69,9 @@ failed, content was skipped, or a file could not be read.
   also works. Without ClamAV the report says so and the verdict is
   `Inconclusive`.
 - Optional: Sandboxie-Plus for detonation on Windows Home; Windows Sandbox for
-  the VM backend on Pro/Enterprise/Education.
+  the VM backend on Pro/Enterprise/Education. The desktop app can install
+  Sandboxie-Plus for you, silently; it needs administrator once because it loads
+  a kernel driver and registers a service, so unlike ClamAV it cannot be portable.
 
 ## Build and test
 

@@ -38,7 +38,7 @@ pub enum Event {
     Failed(String),
     Detonation(Box<Detonation>),
     DetonationFailed(String),
-    SandboxieInstallLaunched,
+    SandboxieInstalled,
     SandboxieInstallFailed(String),
     ClamavProgress(InstallStep),
     ClamavInstalled(PathBuf),
@@ -115,7 +115,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
             }
             Command::InstallSandboxie => match install_sandboxie() {
                 Ok(()) => {
-                    let _ = events.send(Event::SandboxieInstallLaunched);
+                    let _ = events.send(Event::SandboxieInstalled);
                 }
                 Err(error) => {
                     let _ = events.send(Event::SandboxieInstallFailed(error));

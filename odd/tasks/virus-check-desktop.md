@@ -152,6 +152,15 @@ L34. Second review round on the uncommitted L33 changes: risk, readability, reli
 
 Verified: `fmt`, `clippy -D warnings`, 107 tests (2 ignored), release build, both PowerShell scripts parsed with `[scriptblock]::Create` (the elevated one is 974 chars, 2,600 in base64, no spaces), the manual download test (1.65 s, digest matched, directory removed), and a screenshot of the dialog with the new labels. The elevated path itself was not executed: it would raise a UAC prompt, and the machine already has no Sandboxie to reinstall.
 
+L35. The Sandboxie install was neither silent nor hidden, and the fix needed evidence about the vendor's installer before promising portability.
+
+Runtime evidence: the elevated PowerShell opened its own console and the Inno Setup wizard appeared. Fix: both layers of PowerShell now start with `-WindowStyle Hidden` (the outer `Start-Process -Verb RunAs` and the `-EncodedCommand` child), the installer runs `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` and is waited on synchronously, the script checks `%ProgramFiles%\Sandboxie-Plus\Start.exe` afterwards (exit 5 if the install did not land), and the installer file is deleted as soon as it exits, so nothing of the 25.5 MB stays behind. The dialog no longer closes: the worker re-detects support and the still-open modal lists Sandboxie the next frame.
+
+**Portability is not possible, and the vendor's own script says why.** `Installer/Sandboxie-Plus.iss` gates every driver and service entry - `KmdUtil install SbieDrv`, `KmdUtil install SbieSvc`, `KmdUtil start SbieSvc` - on `Check: not IsPortable`. The `/PORTABLE=1` mode exists, but it skips exactly the parts that make Sandboxie a sandbox; it copies the GUI and config only. A kernel driver also has to live where an unprivileged user cannot rewrite it, which rules out `%LOCALAPPDATA%`. So the honest maximum is: silent, one UAC prompt, no console, no leftover installer, and a normal install under Program Files. That conclusion is recorded in the module doc and the README instead of being discovered again later.
+
+Verified with the real installer, not by reading: `Sandboxie-Plus-x64-v1.19.1.exe /PORTABLE=1 /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=<temp>` returned exit 0 with no wizard and no elevation, and produced 71 files including `Start.exe`; the tree and the test box were removed afterwards, and no `Sbie` service or `C:\Sandbox` entry was created. Both scripts parse, 108 tests pass, `clippy -D warnings` and `fmt` are clean.
+
+
 
 
 

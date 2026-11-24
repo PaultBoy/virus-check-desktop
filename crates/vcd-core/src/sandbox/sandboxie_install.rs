@@ -11,8 +11,16 @@
 //! prompt would then elevate someone else's binary. The elevated script creates
 //! a directory only administrators can write (`%ProgramFiles%`), downloads a
 //! uniquely named file there, checks the pinned SHA-256 on that copy and only
-//! then starts it. The user still sees the publisher in the UAC prompt and picks
-//! the options in the installer; nothing is installed silently.
+//! then starts it.
+//!
+//! The install is silent and unattended: `/VERYSILENT` with no console window, so
+//! the only thing the user answers is the UAC prompt. It is **not** portable, and
+//! cannot be: the installer's own `/PORTABLE=1` mode skips every step that
+//! registers `SbieDrv.sys` and `SbieSvc` (`Installer/Sandboxie-Plus.iss` gates
+//! them on `Check: not IsPortable`), which is exactly what makes Sandboxie a
+//! sandbox. A kernel driver has to live where a non-admin user cannot rewrite it,
+//! so `%ProgramFiles%` is a requirement, not a preference. The installer file
+//! itself is deleted once it finishes.
 
 use crate::download;
 
@@ -46,14 +54,19 @@ if (-not (Test-Path -LiteralPath $curl)) { exit 3 }
 if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 3 }
 $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($hash -ne '__DIGEST__') { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 2 }
-Start-Process -FilePath $path -WorkingDirectory $dir
+& $path /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 5 }
+Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+if (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Sandboxie-Plus\Start.exe'))) { exit 5 }
 exit 0
 "#;
 
-/// Starts the elevated script and maps its exit code back to a reason.
+/// Starts the elevated script and maps its exit code back to a reason. Both the
+/// outer `Start-Process` and the PowerShell inside it are hidden: a console
+/// window would be the first thing the user sees.
 const LAUNCH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
      try {\n\
-     $p = Start-Process -FilePath $env:VCD_ELEVATED_POWERSHELL -ArgumentList @('-NoProfile','-EncodedCommand',$env:VCD_ELEVATED_ENCODED) -Verb RunAs -Wait -PassThru\n\
+     $p = Start-Process -FilePath $env:VCD_ELEVATED_POWERSHELL -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-EncodedCommand',$env:VCD_ELEVATED_ENCODED) -Verb RunAs -WindowStyle Hidden -Wait -PassThru\n\
      exit $p.ExitCode\n\
      } catch { exit 1 }";
 
@@ -84,6 +97,10 @@ pub fn install() -> Result<(), String> {
             "cannot create the installer directory under Program Files; nothing was run"
                 .to_string(),
         ),
+        Some(5) => Err(
+            "the installer finished but Sandboxie-Plus is not under Program Files; check its log"
+                .to_string(),
+        ),
         _ => Err(format!("the installer did not start (exit code {status})")),
     }
 }
@@ -110,30 +127,50 @@ mod tests {
     }
 
     #[test]
-    fn the_elevated_script_downloads_checks_and_only_then_starts() {
+    fn the_elevated_script_downloads_checks_and_installs_silently() {
         let script = ELEVATED_SCRIPT
             .replace("__URL__", &installer_url())
             .replace("__DIGEST__", SANDBOXIE_INSTALLER_SHA256);
 
         let download_at = script.find("curl.exe").expect("downloads with curl");
         let hash_at = script.find("Get-FileHash").expect("hashes the copy");
-        let launch_at = script
-            .find("Start-Process -FilePath $path")
-            .expect("starts it");
+        let install_at = script
+            .find("/VERYSILENT")
+            .expect("installs without a wizard");
 
         assert!(
             download_at < hash_at,
             "the digest is checked after the download"
         );
         assert!(
-            hash_at < launch_at,
-            "the installer starts only after the check"
+            hash_at < install_at,
+            "the installer runs only after the check"
+        );
+        assert!(script.contains("/SUPPRESSMSGBOXES"));
+        assert!(script.contains("/NORESTART"));
+        assert!(
+            !script.contains("Start-Process -FilePath $path"),
+            "no interactive wizard is started"
+        );
+        assert!(
+            script.contains("Sandboxie-Plus\\Start.exe"),
+            "it verifies the install landed"
+        );
+        assert!(
+            script.contains("Remove-Item -LiteralPath $path"),
+            "the installer file does not stay behind"
         );
         assert!(script.contains(SANDBOXIE_INSTALLER_SHA256));
         assert!(
             !script.contains("$env:VCD_SANDBOXIE"),
             "constants travel in the script: the elevated process does not inherit the environment"
         );
+    }
+
+    #[test]
+    fn both_the_outer_and_the_inner_window_are_hidden() {
+        assert!(LAUNCH_SCRIPT.contains("-WindowStyle Hidden"));
+        assert!(LAUNCH_SCRIPT.contains("'-WindowStyle','Hidden'"));
     }
 
     #[test]
