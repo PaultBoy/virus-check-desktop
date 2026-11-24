@@ -1,8 +1,10 @@
 //! Engine contract.
 //!
 //! An engine inspects a target and returns an [`EngineReport`] carrying its own
-//! status, findings and coverage. External engines (ClamAV, Defender, YARA-X)
-//! are spawned as processes by their own modules; nothing here links their code.
+//! status, findings and coverage. Engines own their own boundary: Defender and
+//! `clamscan`/`clamdscan` are spawned as processes, YARA-X compiles rules in
+//! process, and ClamAV's tree scans call `libclamav.dll` through [`clamav_direct`]
+//! after the process paths are unavailable.
 
 pub mod clamav;
 pub mod clamav_direct;

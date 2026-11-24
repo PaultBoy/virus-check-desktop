@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 pub(crate) const DAEMON_PORT: u16 = 3311;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+/// Written by clamd itself, which is what makes it evidence of ownership.
+const PID_FILE: &str = "clamd.pid";
 
 /// A single file above this is refused by ClamAV itself.
 pub(crate) const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -130,16 +132,22 @@ impl ClamDaemon {
         write_config(&config, database, &work_dir)?;
 
         if port_is_open() {
-            let adopted = marker.is_file();
-            if adopted {
-                // We started it in a previous run; keep ownership so it can be
-                // stopped at the end of this one.
-                let _ = fs::write(&marker, std::process::id().to_string());
+            // A listener on our port is only ours if the PID it published is a
+            // clamd. Otherwise anything resident could answer "OK" for every
+            // file and the report would call it clean.
+            if !listener_is_our_daemon(&work_dir) {
+                return Err(format!(
+                    "port {DAEMON_PORT} is in use by a process that is not this ClamAV daemon; refusing to trust it"
+                ));
             }
+
+            // We started it in a previous run; keep ownership so it can be
+            // stopped at the end of this one.
+            let _ = fs::write(&marker, std::process::id().to_string());
             return Ok(Self {
                 config,
                 child: None,
-                owned: adopted,
+                owned: true,
             });
         }
 
@@ -199,19 +207,26 @@ impl Drop for ClamDaemon {
         }
 
         // Ask politely first, then make sure the child is gone.
-        let _ = Command::new(clamdscan_path())
+        let stopped = Command::new(clamdscan_path())
             .arg("-c")
             .arg(&self.config)
             .arg("--stop")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
 
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let _ = fs::remove_file(work_dir().join("owner.pid"));
+
+        // Keep the marker when the daemon refused to stop: the next run still
+        // owns it and has to be able to say so.
+        if stopped || !port_is_open() {
+            let _ = fs::remove_file(work_dir().join("owner.pid"));
+        }
     }
 }
 
@@ -238,9 +253,35 @@ fn port_is_open() -> bool {
     addresses.any(|address| TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok())
 }
 
+/// The daemon writes its own PID to `clamd.pid`; our marker alone proves
+/// nothing, because any process can hold the port.
+fn listener_is_our_daemon(work_dir: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(work_dir.join(PID_FILE)) else {
+        return false;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return false;
+    };
+
+    process_image_name(pid).is_some_and(|name| name.eq_ignore_ascii_case("clamd.exe"))
+}
+
+fn process_image_name(pid: u32) -> Option<String> {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let first = text.lines().next()?.trim();
+    let name = first.split(',').next()?.trim_matches('"');
+
+    (!name.is_empty() && !name.starts_with("INFO")).then(|| name.to_string())
+}
+
 fn write_config(config: &Path, database: &Path, work_dir: &Path) -> Result<(), String> {
     let log = work_dir.join("clamd.log");
-    let pid = work_dir.join("clamd.pid");
+    let pid = work_dir.join(PID_FILE);
     let temp = std::env::temp_dir();
 
     let mut file =

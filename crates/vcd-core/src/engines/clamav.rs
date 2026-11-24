@@ -1,13 +1,18 @@
 //! ClamAV engine.
 //!
-//! Preferred path: a managed `clamd` (see [`super::clamd`]) scanned through
-//! `clamdscan`, so the signature database loads once instead of per file. If no
-//! daemon can be started, it falls back to one `clamscan` process per file and
-//! says so, because that cost is real and the report should carry it.
+//! Three ways to run it, in the order [`ClamAvEngine::discover`] tries them:
 //!
-//! ClamAV is always a separate process, never linked: its license is GPLv2 and
-//! its database updates on its own schedule. Its per-file cap is reported as
-//! [`Coverage`]: a 3 GiB file that ClamAV refused to open must not look clean.
+//! 1. `libclamav.dll` in process, through the FFI in [`super::clamav_direct`].
+//!    The database loads and compiles once, and every file after that is a
+//!    function call.
+//! 2. A managed `clamd` (see [`super::clamd`]) scanned through `clamdscan`, so
+//!    the signature database loads once instead of per file.
+//! 3. One `clamscan` process per file, with explicit size and time limits.
+//!
+//! ClamAV's own CLI defaults skip files above ~100 MiB and still exit 0, so the
+//! limits are passed explicitly and a skipped file is reported as partial
+//! coverage. Its per-file cap is [`Coverage`]: a 3 GiB file that ClamAV refused
+//! to open must not look clean.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -23,6 +28,15 @@ use super::clamd::{ClamDaemon, MAX_SCAN_BYTES, discover_paths};
 use super::{Engine, ScanTarget};
 
 const SCAN_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Limits for the per-file process path. The `M` suffix is part of the value:
+/// a bare number is bytes, and ClamAV's defaults skip anything above ~100 MiB
+/// while still exiting 0.
+const CLAMSCAN_LIMITS: [&str; 3] = [
+    "--max-filesize=2048M",
+    "--max-scansize=2048M",
+    "--max-scantime=600000",
+];
 
 const HINT: &str = "ClamAV not found: install it and put clamscan.exe on PATH \
      (https://docs.clamav.net/manual/Installing.html) or in C:\\Program Files\\ClamAV";
@@ -111,6 +125,12 @@ impl Engine for ClamAvEngine {
     fn scan(&self, target: &ScanTarget<'_>) -> EngineReport {
         let started = Instant::now();
 
+        // An absent engine is absent whatever the file size: blaming the file
+        // with "too large to scan" would hide that ClamAV is not installed.
+        if let Mode::Unavailable(hint) = &self.mode {
+            return EngineReport::unavailable(self.name(), hint.clone());
+        }
+
         if target.size > MAX_SCAN_BYTES {
             return EngineReport::completed(
                 self.name(),
@@ -127,59 +147,95 @@ impl Engine for ClamAvEngine {
             )]);
         }
 
-        if let Mode::Direct(direct) = &self.mode {
-            return match direct.scan(target.path) {
-                Ok((names, scanned)) => {
-                    let detections: Vec<Detection> = names
-                        .into_iter()
-                        .map(|name| Detection {
-                            name: "clamav-signature".to_string(),
-                            severity: Severity::Malicious,
-                            detail: name,
-                        })
-                        .collect();
-
-                    let coverage = if scanned == 0 && target.size > 0 {
-                        Coverage::Partial {
-                            scanned_bytes: 0,
-                            reason: "libclamav inspected no bytes".to_string(),
-                        }
-                    } else {
-                        Coverage::Complete
-                    };
-
-                    EngineReport::completed(self.name(), detections, coverage, started.elapsed())
-                        .with_facts(vec![
-                            Fact::new("mode", "libclamav (in-process)"),
-                            Fact::new(
-                                "engine",
-                                format!(
-                                    "ClamAV {}, {} signatures",
-                                    direct.version(),
-                                    direct.signatures()
-                                ),
-                            ),
-                            Fact::new("database", direct.root().display().to_string()),
-                        ])
-                }
-                Err(error) => EngineReport::failed(self.name(), error),
-            };
-        }
-
-        let (program, prefix) = match &self.mode {
-            Mode::Unavailable(hint) => return EngineReport::unavailable(self.name(), hint.clone()),
-            Mode::Direct(_) => unreachable!("handled above"),
-            Mode::Daemon { daemon, client } => (
+        match &self.mode {
+            Mode::Unavailable(hint) => EngineReport::unavailable(self.name(), hint.clone()),
+            Mode::Direct(direct) => self.scan_direct(direct, target, started),
+            Mode::Daemon { daemon, client } => self.scan_process(
                 client.as_path(),
-                vec![OsString::from("-c"), daemon.config().as_os_str().to_owned()],
+                &[OsString::from("-c"), daemon.config().as_os_str().to_owned()],
+                "clamd (database loaded once)",
+                target,
+                started,
             ),
-            Mode::Clamscan(path) => (path.as_path(), Vec::new()),
-        };
+            Mode::Clamscan(executable) => self.scan_process(
+                executable.as_path(),
+                &CLAMSCAN_LIMITS.map(OsString::from),
+                "clamscan (database loaded per file)",
+                target,
+                started,
+            ),
+        }
+    }
+}
 
+impl ClamAvEngine {
+    fn scan_direct(
+        &self,
+        direct: &ClamAvDirect,
+        target: &ScanTarget<'_>,
+        started: Instant,
+    ) -> EngineReport {
+        match direct.scan(target.path) {
+            Ok((names, scanned)) => {
+                let detections: Vec<Detection> = names
+                    .into_iter()
+                    .map(|name| Detection {
+                        name: "clamav-signature".to_string(),
+                        severity: Severity::Malicious,
+                        detail: name,
+                    })
+                    .collect();
+
+                let coverage = if scanned == 0 && target.size > 0 {
+                    Coverage::Partial {
+                        scanned_bytes: 0,
+                        reason: "libclamav inspected no bytes".to_string(),
+                    }
+                } else {
+                    Coverage::Complete
+                };
+
+                EngineReport::completed(self.name(), detections, coverage, started.elapsed())
+                    .with_facts(vec![
+                        Fact::new("mode", "libclamav (in-process)"),
+                        Fact::new(
+                            "engine",
+                            format!(
+                                "ClamAV {}, {} signatures",
+                                direct.version(),
+                                direct.signatures()
+                            ),
+                        ),
+                        Fact::new("database", direct.root().display().to_string()),
+                    ])
+            }
+            Err(error) => EngineReport::failed(self.name(), error),
+        }
+    }
+
+    fn scan_process(
+        &self,
+        program: &Path,
+        arguments: &[OsString],
+        mode: &'static str,
+        target: &ScanTarget<'_>,
+        started: Instant,
+    ) -> EngineReport {
         let output_path = temp_output_path();
-        let outcome = run_scan(program, &prefix, target.path, &output_path);
-        let stdout = read_text(&output_path).unwrap_or_default();
+        let outcome = run_scan(program, arguments, target.path, &output_path);
+        let stdout = read_text(&output_path);
         let _ = std::fs::remove_file(&output_path);
+
+        // Exit 0 with output we could not read is not a clean scan.
+        let stdout = match stdout {
+            Ok(text) => text,
+            Err(error) => {
+                return EngineReport::failed(
+                    self.name(),
+                    format!("cannot read ClamAV's output: {error}"),
+                );
+            }
+        };
 
         let exit_code = match outcome {
             Ok(code) => code,
@@ -206,15 +262,24 @@ impl Engine for ClamAvEngine {
             "signatures",
             format!("{} detection(s) reported by ClamAV", detections.len()),
         )];
-        facts.push(Fact::new(
-            "mode",
-            match &self.mode {
-                Mode::Daemon { .. } => "clamd (database loaded once)",
-                _ => "clamscan (database loaded per file)",
-            },
-        ));
+        facts.push(Fact::new("mode", mode));
         if let Some(note) = &self.daemon_note {
             facts.push(Fact::new("daemon", note.clone()));
+        }
+
+        // clamscan answers "OK" for content it never inspected when a limit
+        // stops it. Reporting that as complete coverage is a false clean.
+        if let Some(reason) = skipped_reason(&stdout) {
+            return EngineReport::completed(
+                self.name(),
+                detections,
+                Coverage::Partial {
+                    scanned_bytes: 0,
+                    reason,
+                },
+                started.elapsed(),
+            )
+            .with_facts(facts);
         }
 
         EngineReport::completed(
@@ -225,6 +290,18 @@ impl Engine for ClamAvEngine {
         )
         .with_facts(facts)
     }
+}
+
+/// ClamAV's CLI defaults skip anything above ~100 MiB and still exit 0, so the
+/// limits are stated explicitly (with the `M` suffix: a bare number is bytes)
+/// and a skipped file is matched to our own 2 GiB guard.
+fn skipped_reason(stdout: &str) -> Option<String> {
+    const MARKERS: [&str; 3] = ["Size limit exceeded", "File too large", "too large to scan"];
+
+    MARKERS
+        .iter()
+        .find(|marker| stdout.contains(**marker))
+        .map(|marker| format!("ClamAV skipped content it was given: {marker}"))
 }
 
 fn find_install(scan: &Path) -> Option<PathBuf> {
@@ -287,11 +364,15 @@ fn run_scan(
     // child, and the timeout would then be indistinguishable from a slow scan.
     let sink = File::create(output).map_err(RunError::Io)?;
 
+    // An absolute path can never be read as an option, so a sample named
+    // `--help` cannot make clamscan print usage and exit 0.
+    let target = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
+
     let mut command = Command::new(program);
     command.args(prefix);
     command
         .arg("--no-summary")
-        .arg(target)
+        .arg(&target)
         .stdin(Stdio::null())
         .stdout(Stdio::from(sink))
         .stderr(Stdio::null());
@@ -342,6 +423,14 @@ mod tests {
             header: &[],
             content_type: crate::filetype::ContentType::Pe,
         }
+    }
+
+    #[test]
+    fn the_process_path_states_clamavs_limits_in_megabytes() {
+        // A bare number is bytes: `--max-filesize=2048` skipped a 291 MiB file.
+        assert_eq!(CLAMSCAN_LIMITS[0], "--max-filesize=2048M");
+        assert_eq!(CLAMSCAN_LIMITS[1], "--max-scansize=2048M");
+        assert_eq!(CLAMSCAN_LIMITS[2], "--max-scantime=600000");
     }
 
     #[test]

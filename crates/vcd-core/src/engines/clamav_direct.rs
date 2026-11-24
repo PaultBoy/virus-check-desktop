@@ -38,6 +38,12 @@ const SCAN_PARSE_ALL: u32 =
 
 /// ClamAV's own per-file ceiling.
 const MAX_FILE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
+/// One adversarial file must not hold the worker for the whole session.
+const MAX_SCAN_MILLIS: i64 = 600_000;
+/// Files inside one archive.
+const MAX_EMBEDDED_FILES: i64 = 10_000;
+/// Nested archive depth.
+const MAX_RECURSION: i64 = 17;
 
 #[repr(C)]
 struct ScanOptions {
@@ -76,8 +82,9 @@ extern "C" fn silent(
 }
 
 pub struct ClamAvDirect {
-    /// Must outlive the engine and every function pointer taken from it.
-    library: Library,
+    /// Held only so the image outlives the engine and every function pointer
+    /// taken from it; `Drop` unloads it after freeing the engine.
+    library: Option<Library>,
     engine: *mut c_void,
     free: FnFree,
     scan_file: FnScanFile,
@@ -103,12 +110,16 @@ impl ClamAvDirect {
             return Err(format!("{} not found", database.display()));
         }
 
-        // libclamav depends on the DLLs next to it; make that directory
-        // searchable for the loader without touching the user's environment.
-        set_dll_directory(install);
-
-        let library = unsafe { Library::new(&dll) }
-            .map_err(|error| format!("cannot load {}: {error}", dll.display()))?;
+        // libclamav depends on the DLLs next to it, so that directory has to be
+        // searchable while the loader runs. `SetDllDirectoryW` is process-wide,
+        // so the previous value is restored immediately after the load: leaving
+        // a user-writable tree in the search path would affect every later
+        // `LoadLibrary` in the UI stack.
+        let library = {
+            let _scoped = DllDirectoryGuard::push(install);
+            unsafe { Library::new(&dll) }
+                .map_err(|error| format!("cannot load {}: {error}", dll.display()))?
+        };
 
         let init: FnInit = symbol(&library, b"cl_init\0")?;
         let engine_new: FnEngineNew = symbol(&library, b"cl_engine_new\0")?;
@@ -138,9 +149,9 @@ impl ClamAvDirect {
 
             set_num(engine, CL_ENGINE_MAX_FILESIZE, MAX_FILE_BYTES);
             set_num(engine, CL_ENGINE_MAX_SCANSIZE, MAX_FILE_BYTES);
-            set_num(engine, CL_ENGINE_MAX_FILES, 10_000);
-            set_num(engine, CL_ENGINE_MAX_RECURSION, 17);
-            set_num(engine, CL_ENGINE_MAX_SCANTIME, 0);
+            set_num(engine, CL_ENGINE_MAX_FILES, MAX_EMBEDDED_FILES);
+            set_num(engine, CL_ENGINE_MAX_RECURSION, MAX_RECURSION);
+            set_num(engine, CL_ENGINE_MAX_SCANTIME, MAX_SCAN_MILLIS);
 
             // This libclamav build resolves the certificate and temp
             // directories relative to its build tree, which does not exist on a
@@ -172,7 +183,7 @@ impl ClamAvDirect {
             };
 
             Ok(Self {
-                library,
+                library: Some(library),
                 engine,
                 free,
                 scan_file,
@@ -223,20 +234,30 @@ impl ClamAvDirect {
             )
         };
 
-        match code {
-            CL_SUCCESS => Ok((Vec::new(), scanned as u64)),
-            CL_VIRUS => {
-                let name = if virname.is_null() {
-                    "unnamed signature".to_string()
-                } else {
-                    unsafe { CStr::from_ptr(virname) }
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                Ok((vec![name], scanned as u64))
-            }
-            other => Err(format!("libclamav scan failed with code {other}")),
+        interpret(code, virname, scanned)
+    }
+}
+
+/// Map ClamAV's result to what the engine contract needs. An error is never
+/// "clean": only `CL_SUCCESS` means no signature matched.
+fn interpret(
+    code: c_int,
+    virname: *const c_char,
+    scanned: c_ulong,
+) -> Result<(Vec<String>, u64), String> {
+    match code {
+        CL_SUCCESS => Ok((Vec::new(), scanned as u64)),
+        CL_VIRUS => {
+            let name = if virname.is_null() {
+                "unnamed signature".to_string()
+            } else {
+                unsafe { CStr::from_ptr(virname) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            Ok((vec![name], scanned as u64))
         }
+        other => Err(format!("libclamav scan failed with code {other}")),
     }
 }
 
@@ -248,8 +269,9 @@ impl Drop for ClamAvDirect {
             }
             self.engine = std::ptr::null_mut();
         }
-        // `library` stays alive until after this drop body runs.
-        let _ = &self.library;
+        // Explicit and after the engine: unloading first would run the engine's
+        // code out of an unmapped image.
+        self.library.take();
     }
 }
 
@@ -286,21 +308,65 @@ fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, String> {
 }
 
 /// Windows resolves a DLL's dependencies from the process search path, not from
-/// the DLL's own folder; point the loader at the ClamAV directory first.
-fn set_dll_directory(directory: &Path) {
-    let wide: Vec<u16> = directory
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+/// the DLL's own folder. The directory is set for the duration of the load and
+/// the previous value is put back when the guard drops.
+struct DllDirectoryGuard {
+    previous: Option<Vec<u16>>,
+}
 
-    unsafe extern "system" {
-        fn SetDllDirectoryW(path: *const u16) -> i32;
+impl DllDirectoryGuard {
+    fn push(directory: &Path) -> Self {
+        let previous = current_dll_directory();
+        let wide: Vec<u16> = directory
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            SetDllDirectoryW(wide.as_ptr());
+        }
+
+        Self { previous }
+    }
+}
+
+impl Drop for DllDirectoryGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(wide) => {
+                    SetDllDirectoryW(wide.as_ptr());
+                }
+                None => {
+                    SetDllDirectoryW(std::ptr::null());
+                }
+            }
+        }
+    }
+}
+
+fn current_dll_directory() -> Option<Vec<u16>> {
+    // Zero means "not set" as well as failure; both restore to no directory.
+    let needed = unsafe { GetDllDirectoryW(0, std::ptr::null_mut()) };
+    if needed == 0 {
+        return None;
     }
 
-    unsafe {
-        SetDllDirectoryW(wide.as_ptr());
+    let mut buffer = vec![0u16; needed as usize + 1];
+    let written = unsafe { GetDllDirectoryW(buffer.len() as u32, buffer.as_mut_ptr()) };
+    if written == 0 {
+        return None;
     }
+
+    buffer.truncate(written as usize);
+    buffer.push(0);
+    Some(buffer)
+}
+
+unsafe extern "system" {
+    fn SetDllDirectoryW(path: *const u16) -> i32;
+    fn GetDllDirectoryW(length: u32, buffer: *mut u16) -> u32;
 }
 
 use std::os::windows::ffi::OsStrExt;
@@ -315,6 +381,25 @@ mod tests {
         assert_eq!(SCAN_PARSE_ALL & 0x1, 0x1); // archive
         assert_eq!(SCAN_PARSE_ALL & 0x200, 0x200); // PE
         assert_eq!(SCAN_PARSE_ALL & 0x800, 0x800); // image
+    }
+
+    #[test]
+    fn result_codes_map_to_clean_virus_and_error() {
+        assert_eq!(
+            interpret(CL_SUCCESS, std::ptr::null(), 4096).unwrap(),
+            (Vec::new(), 4096)
+        );
+
+        let signature = CString::new("Eicar-Test-Signature").unwrap();
+        let (names, scanned) = interpret(CL_VIRUS, signature.as_ptr(), 68).unwrap();
+        assert_eq!(names, vec!["Eicar-Test-Signature".to_string()]);
+        assert_eq!(scanned, 68);
+
+        // A virus with no name is still a virus, never clean.
+        let (names, _) = interpret(CL_VIRUS, std::ptr::null(), 1).unwrap();
+        assert_eq!(names, vec!["unnamed signature".to_string()]);
+
+        assert!(interpret(-1, std::ptr::null(), 0).is_err());
     }
 
     #[test]
