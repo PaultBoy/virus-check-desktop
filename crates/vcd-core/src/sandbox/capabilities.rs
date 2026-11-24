@@ -5,7 +5,6 @@
 //! trade-off is reported with every detonation instead of being hidden.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -119,7 +118,7 @@ pub fn detect_support() -> SandboxSupport {
 }
 
 fn edition() -> Edition {
-    let Ok(output) = Command::new("reg")
+    let Ok(output) = crate::download::hidden_command("reg")
         .args([
             "query",
             r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
@@ -180,9 +179,9 @@ pub fn enable_windows_sandbox() -> Result<PathBuf, String> {
     // process's own command line, so a file another process can replace is
     // never read with administrator rights.
     let script = ENABLE_SCRIPT.replace("__LOG__", &powershell_literal(&log));
-    let encoded = utf16le_base64(&script);
+    let encoded = crate::download::utf16le_base64(&script);
 
-    Command::new(system32(r"WindowsPowerShell\v1.0\powershell.exe"))
+    crate::download::hidden_command(crate::download::system32(r"WindowsPowerShell\v1.0\powershell.exe"))
         .args(["-NoProfile", "-Command"])
         .arg(format!(
             "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-EncodedCommand','{encoded}'"
@@ -193,54 +192,9 @@ pub fn enable_windows_sandbox() -> Result<PathBuf, String> {
     Ok(log)
 }
 
-fn system32(name: &str) -> PathBuf {
-    std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32")
-        .join(name)
-}
-
 /// A PowerShell single-quoted literal: only the quote itself needs escaping.
 fn powershell_literal(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "''"))
-}
-
-/// `powershell -EncodedCommand` takes base64 of the UTF-16LE script.
-fn utf16le_base64(text: &str) -> String {
-    base64(
-        &text
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<u8>>(),
-    )
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0] as u32;
-        let second = chunk.get(1).copied().unwrap_or(0) as u32;
-        let third = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (first << 16) | (second << 8) | third;
-
-        encoded.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
-        encoded.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
-        encoded.push(if chunk.len() > 1 {
-            ALPHABET[(triple >> 6) as usize & 0x3f] as char
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            ALPHABET[triple as usize & 0x3f] as char
-        } else {
-            '='
-        });
-    }
-
-    encoded
 }
 
 #[cfg(test)]

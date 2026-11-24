@@ -64,6 +64,7 @@ struct App {
     installing_clamav: bool,
     clamav_progress: Option<InstallStep>,
     clamav_error: Option<String>,
+    installing_sandboxie: bool,
     show_clamav_prompt: bool,
     show_sandbox_prompt: bool,
     sandbox_index: Option<usize>,
@@ -117,6 +118,7 @@ impl App {
             installing_clamav: false,
             clamav_progress: None,
             clamav_error: None,
+            installing_sandboxie: false,
             show_clamav_prompt: false,
             show_sandbox_prompt: false,
             sandbox_index: None,
@@ -180,6 +182,7 @@ impl App {
         matches!(self.phase, Phase::Starting | Phase::Scanning)
             || self.detonating
             || self.installing_clamav
+            || self.installing_sandboxie
     }
 
     fn drain_events(&mut self) {
@@ -232,6 +235,20 @@ impl App {
                 }
                 Event::DetonationFailed(error) => {
                     self.detonating = false;
+                    self.sandbox_error = Some(error.clone());
+                    self.failure = Some(error);
+                }
+                Event::SandboxieInstallLaunched => {
+                    self.installing_sandboxie = false;
+                    self.support = detect_support();
+                    // The dialog cannot see the wizard finish, so close it and
+                    // let the notice explain what to do next.
+                    self.show_sandbox_prompt = false;
+                    self.sandbox_error = None;
+                    self.notice = Some(self.strings.sandboxie_install_notice().to_string());
+                }
+                Event::SandboxieInstallFailed(error) => {
+                    self.installing_sandboxie = false;
                     self.sandbox_error = Some(error.clone());
                     self.failure = Some(error);
                 }
@@ -307,6 +324,7 @@ impl App {
         let backends = self.support.available();
         let supports_vm = self.support.edition.supports_windows_sandbox();
         let detonating = self.detonating;
+        let installing = self.installing_sandboxie;
         let error = self.sandbox_error.clone();
         let sample = self.files[index]
             .target
@@ -318,6 +336,7 @@ impl App {
         let mut chosen = None;
         let mut close = false;
         let mut enable = false;
+        let mut install = false;
 
         egui::Modal::new(egui::Id::new("sandbox_prompt")).show(ctx, |ui| {
             ui.set_max_width(520.0);
@@ -338,6 +357,11 @@ impl App {
                     ui.spinner();
                     ui.label(booting);
                 });
+            } else if installing {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(self.strings.installing_sandboxie());
+                });
             } else {
                 if backends.is_empty() {
                     let message = if supports_vm {
@@ -349,6 +373,9 @@ impl App {
                     ui.add_space(6.0);
                     if supports_vm && ui.button(self.strings.enable_sandbox()).clicked() {
                         enable = true;
+                    }
+                    if ui.button(self.strings.install_sandboxie()).clicked() {
+                        install = true;
                     }
                 } else {
                     for backend in backends {
@@ -369,6 +396,16 @@ impl App {
                         ui.label(RichText::new(description).weak());
                         ui.add_space(6.0);
                     }
+
+                    // Sandboxie works on every edition, so the offer is not
+                    // limited to machines where Windows Sandbox is impossible.
+                    if !self.support.sandboxie {
+                        ui.separator();
+                        ui.label(RichText::new(self.strings.sandboxie_missing_hint()).weak());
+                        if ui.button(self.strings.install_sandboxie()).clicked() {
+                            install = true;
+                        }
+                    }
                 }
 
                 ui.add_space(6.0);
@@ -378,7 +415,7 @@ impl App {
             }
         });
 
-        if !detonating && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !detonating && !installing && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             close = true;
         }
 
@@ -394,6 +431,12 @@ impl App {
                 }
                 Err(failure) => self.sandbox_error = Some(failure),
             }
+        }
+
+        if install && !self.installing_sandboxie {
+            self.installing_sandboxie = true;
+            self.sandbox_error = None;
+            self.worker.send(Command::InstallSandboxie);
         }
 
         if let Some(backend) = chosen {
@@ -525,6 +568,9 @@ impl App {
             } else if self.detonating {
                 ui.spinner();
                 ui.label(self.strings.detonating());
+            } else if self.installing_sandboxie {
+                ui.spinner();
+                ui.label(self.strings.installing_sandboxie());
             } else {
                 match self.phase {
                     Phase::Idle => {
@@ -765,6 +811,9 @@ impl App {
             });
 
         if request_sandbox_prompt {
+            // Re-detect here, not at startup only: the user may have installed a
+            // backend since the window opened.
+            self.support = detect_support();
             self.sandbox_index = Some(index);
             self.sandbox_error = None;
             self.show_sandbox_prompt = true;

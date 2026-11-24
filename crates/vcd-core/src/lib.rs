@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod clamav_install;
+mod download;
 pub mod engines;
 pub mod filetype;
 pub mod hashing;
@@ -21,7 +22,7 @@ pub(crate) mod test_support;
 
 pub use sandbox::{
     Backend, DetonateOptions, Detonation, Edition, SandboxError, SandboxSupport, detect_support,
-    detonate, detonate_with, enable_windows_sandbox,
+    detonate, detonate_with, enable_windows_sandbox, install_sandboxie,
 };
 
 pub use clamav_install::{

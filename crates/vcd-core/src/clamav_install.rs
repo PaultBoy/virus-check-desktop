@@ -15,11 +15,9 @@
 //! the point: the pair is a code change someone reviews.
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use sha2::{Digest, Sha256};
+use crate::download;
 
 /// Bumping ClamAV is a code change on purpose: the URL is built from this.
 pub const CLAMAV_VERSION: &str = "1.5.5";
@@ -148,6 +146,9 @@ pub fn install_with(progress: &mut dyn FnMut(InstallStep)) -> Result<PathBuf, St
             progress(InstallStep::Extracting);
             let extracted = extract(&msi, &base);
             let _ = fs::remove_file(&msi);
+            if let Some(directory) = msi.parent() {
+                let _ = fs::remove_dir(directory);
+            }
             extracted?;
 
             portable_root().ok_or_else(|| {
@@ -168,7 +169,7 @@ pub fn install_with(progress: &mut dyn FnMut(InstallStep)) -> Result<PathBuf, St
 
     progress(InstallStep::Updating);
     let freshclam = root.join("freshclam.exe");
-    let status = Command::new(&freshclam)
+    let status = download::hidden_command(&freshclam)
         .arg(format!("--config-file={}", config.display()))
         .status()
         .map_err(|error| format!("cannot run freshclam: {error}"))?;
@@ -197,46 +198,24 @@ fn msi_url() -> String {
 }
 
 /// Download into a per-run directory and refuse anything that is not the pinned
-/// file. Two installs running at once therefore never share a path.
+/// file.
 fn download_msi() -> Result<PathBuf, String> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let directory = std::env::temp_dir().join(format!("vcd-clamav-{}-{stamp}", std::process::id()));
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
-
+    let directory = download::per_run_directory("vcd-clamav")?;
     let msi = directory.join(format!("clamav-{CLAMAV_VERSION}.msi"));
-    download(&msi_url(), &msi)?;
-    verify_msi(&msi)?;
+
+    let fetched = download::fetch(&msi_url(), &msi)
+        .and_then(|()| download::verify_sha256(&msi, CLAMAV_MSI_SHA256, "ClamAV MSI"));
+
+    if let Err(error) = fetched {
+        let _ = fs::remove_dir_all(&directory);
+        return Err(error);
+    }
+
     Ok(msi)
 }
 
-/// The MSI is not Authenticode-signed, so the pinned digest is the integrity
-/// control. A mismatch deletes the file and nothing is executed.
-fn verify_msi(msi: &Path) -> Result<(), String> {
-    let actual = sha256_file(msi)?;
-    if actual != CLAMAV_MSI_SHA256 {
-        let _ = fs::remove_file(msi);
-        return Err(format!(
-            "the downloaded MSI does not match the pinned SHA-256 (expected {CLAMAV_MSI_SHA256}, got {actual}); nothing was executed"
-        ));
-    }
-    Ok(())
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file =
-        fs::File::open(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher)
-        .map_err(|error| format!("cannot hash {}: {error}", path.display()))?;
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
 fn extract(msi: &Path, base: &Path) -> Result<(), String> {
-    let status = Command::new(system32("msiexec.exe"))
+    let status = download::hidden_command(download::system32("msiexec.exe"))
         .arg("/a")
         .arg(msi)
         .args(["/qn", &format!("TARGETDIR={}", base.display())])
@@ -264,64 +243,6 @@ fn write_freshclam_config(config: &Path, database: &Path, root: &Path) -> Result
         .map_err(|error| format!("cannot install freshclam.conf: {error}"))
 }
 
-/// A fixed script that reads its inputs from the environment, so neither the URL
-/// nor the destination ever becomes part of the PowerShell source.
-const POWERSHELL_DOWNLOAD: &str = "Invoke-WebRequest -Uri $env:VCD_DOWNLOAD_URL \
-     -OutFile $env:VCD_DOWNLOAD_TARGET -UseBasicParsing";
-
-fn download(url: &str, destination: &Path) -> Result<(), String> {
-    // curl.exe ships with Windows 10 1803+; PowerShell is the fallback.
-    let curl = system32("curl.exe");
-    if curl.is_file() {
-        let status = Command::new(&curl)
-            .args([
-                "-L",
-                "--fail",
-                "--connect-timeout",
-                "30",
-                "--max-time",
-                "1800",
-                "-o",
-            ])
-            .arg(destination)
-            .arg(url)
-            .status()
-            .map_err(|error| format!("cannot run curl: {error}"))?;
-
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!("curl exited with {status}"));
-    }
-
-    let status = Command::new(powershell())
-        .args(["-NoProfile", "-Command", POWERSHELL_DOWNLOAD])
-        .env("VCD_DOWNLOAD_URL", url)
-        .env("VCD_DOWNLOAD_TARGET", destination)
-        .status()
-        .map_err(|error| format!("cannot run powershell: {error}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("download failed with {status}"))
-    }
-}
-
-/// System programs by absolute path: the executable's own directory and the
-/// working directory come before System32 in the Windows search order.
-fn system32(name: &str) -> PathBuf {
-    std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32")
-        .join(name)
-}
-
-fn powershell() -> PathBuf {
-    system32(r"WindowsPowerShell\v1.0\powershell.exe")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,26 +267,6 @@ mod tests {
             CLAMAV_MSI_SHA256
                 .chars()
                 .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
-        );
-    }
-
-    #[test]
-    fn a_download_that_does_not_match_the_digest_is_deleted() {
-        let path = std::env::temp_dir().join(format!(
-            "vcd-msi-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or(0)
-        ));
-        fs::write(&path, b"not the installer").expect("write fake msi");
-
-        let error = verify_msi(&path).expect_err("a foreign file must be refused");
-        assert!(error.contains("does not match"));
-        assert!(
-            !path.exists(),
-            "the rejected file is removed before msiexec"
         );
     }
 

@@ -12,7 +12,7 @@ use std::thread;
 
 use vcd_core::{
     Backend, DetonateOptions, Detonation, InstallStep, ScanControl, ScanProgress, ScanReport,
-    ScanScope, Scanner, Summary, install_portable_clamav_with,
+    ScanScope, Scanner, Summary, install_portable_clamav_with, install_sandboxie,
 };
 
 pub enum Command {
@@ -20,6 +20,7 @@ pub enum Command {
     ScanFolder(PathBuf),
     Detonate(PathBuf, DetonateOptions, Backend),
     InstallClamav,
+    InstallSandboxie,
 }
 
 pub enum Event {
@@ -37,6 +38,8 @@ pub enum Event {
     Failed(String),
     Detonation(Box<Detonation>),
     DetonationFailed(String),
+    SandboxieInstallLaunched,
+    SandboxieInstallFailed(String),
     ClamavProgress(InstallStep),
     ClamavInstalled(PathBuf),
     ClamavFailed(String),
@@ -110,6 +113,14 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, cancel: Arc<AtomicBoo
                     }
                 }
             }
+            Command::InstallSandboxie => match install_sandboxie() {
+                Ok(()) => {
+                    let _ = events.send(Event::SandboxieInstallLaunched);
+                }
+                Err(error) => {
+                    let _ = events.send(Event::SandboxieInstallFailed(error));
+                }
+            },
             Command::ScanFile(path) => {
                 cancel.store(false, Ordering::SeqCst);
                 let _ = events.send(Event::Starting);

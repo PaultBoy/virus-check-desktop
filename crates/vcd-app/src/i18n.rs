@@ -62,19 +62,19 @@ impl Strings {
     pub fn drop_hint(&self) -> &'static str {
         self.pick(
             "drop a file or folder anywhere",
-            "arrastrá un archivo o carpeta acá",
+            "arrastra un archivo o carpeta aquí",
         )
     }
 
     pub fn drop_here(&self) -> &'static str {
         self.pick(
             "Drop a file or a folder here",
-            "Arrastrá un archivo o una carpeta acá",
+            "Arrastra un archivo o una carpeta aquí",
         )
     }
 
     pub fn or_buttons(&self) -> &'static str {
-        self.pick("or use the buttons above", "o usá los botones de arriba")
+        self.pick("or use the buttons above", "o usa los botones de arriba")
     }
 
     pub fn ready(&self) -> &'static str {
@@ -98,14 +98,14 @@ impl Strings {
     pub fn detonating(&self) -> &'static str {
         self.pick(
             "detonating in the sandbox (up to ~2 min)…",
-            "detonando en el sandbox (hasta ~2 min)…",
+            "detonando en el aislamiento (hasta ~2 min)…",
         )
     }
 
     pub fn booting_sandbox(&self) -> &'static str {
         self.pick(
             "booting the sandbox, running the sample…",
-            "iniciando el sandbox y ejecutando la muestra…",
+            "iniciando el aislamiento y ejecutando la muestra…",
         )
     }
 
@@ -184,11 +184,11 @@ impl Strings {
     }
 
     pub fn detonation_title(&self) -> &'static str {
-        self.pick("Sandbox detonation", "Detonación en sandbox")
+        self.pick("Sandbox detonation", "Detonación en aislamiento")
     }
 
     pub fn backend(&self) -> &'static str {
-        self.pick("backend", "motor")
+        self.pick("backend", "aislamiento")
     }
 
     pub fn executed(&self, executed: bool, timed_out: bool, seconds: f64) -> String {
@@ -201,7 +201,7 @@ impl Strings {
         let timed = if timed_out {
             match self.lang {
                 Lang::En => ", timed out (partial data)",
-                Lang::Es => ", agotó el tiempo (datos parciales)",
+                Lang::Es => ", se agotó el tiempo (datos parciales)",
             }
         } else {
             ""
@@ -253,7 +253,7 @@ impl Strings {
     pub fn dropped(&self, count: usize) -> String {
         match self.lang {
             Lang::En => format!("dropped files kept ({count})"),
-            Lang::Es => format!("archivos dropeados guardados ({count})"),
+            Lang::Es => format!("archivos dejados por la muestra ({count})"),
         }
     }
 
@@ -267,24 +267,24 @@ impl Strings {
     pub fn detonation_only(&self) -> &'static str {
         self.pick(
             "the sandbox launches the file as it is, so it needs an executable or script name (.exe, .bat, .ps1, …)",
-            "el sandbox lanza el archivo tal cual, así que necesita un nombre de ejecutable o script (.exe, .bat, .ps1, …)",
+            "el aislamiento lanza el archivo tal cual, así que necesita un nombre de ejecutable o script (.exe, .bat, .ps1, …)",
         )
     }
 
     pub fn detonate_action(&self) -> &'static str {
-        self.pick("Load in a sandbox…", "Cargar en un espacio aislado…")
+        self.pick("Load in a sandbox…", "Ejecutar aislado…")
     }
 
     pub fn sandbox_title(&self) -> &'static str {
-        self.pick("Load in a sandbox", "Cargar en un espacio aislado")
+        self.pick("Load in a sandbox", "Ejecutar aislado")
     }
 
     pub fn sandbox_body(&self) -> &'static str {
         self.pick(
             "The sample runs isolated from your system. Pick the backend; the\n\
              recommended one gives the stronger boundary.",
-            "La muestra corre aislada de tu sistema. Elegí el motor; el\n\
-             recomendado ofrece el aislamiento más fuerte.",
+            "La muestra se ejecuta aislada de tu sistema. Elige el tipo de\n\
+             aislamiento; el recomendado ofrece la barrera más fuerte.",
         )
     }
 
@@ -301,22 +301,47 @@ impl Strings {
 
     pub fn backend_sandboxie(&self) -> &'static str {
         self.pick(
-            "shared kernel: works on Windows Home, weaker boundary",
-            "kernel compartido: funciona en Windows Home, aislamiento más débil",
+            "shared kernel: works on any Windows edition, weaker boundary",
+            "kernel compartido: funciona en cualquier edición de Windows, barrera más débil",
         )
     }
 
     pub fn no_backend_pro(&self) -> &'static str {
         self.pick(
-            "Windows Sandbox is not enabled. Enable it (administrator + reboot), or install Sandboxie-Plus.",
-            "Windows Sandbox no está habilitado. Podés habilitarlo (administrador + reinicio) o instalar Sandboxie-Plus.",
+            "No backend is available yet. Enable Windows Sandbox (administrator + reboot), or install Sandboxie-Plus.",
+            "Todavía no hay ningún aislamiento disponible. Habilita Windows Sandbox (administrador + reinicio) o instala Sandboxie-Plus.",
         )
     }
 
     pub fn no_backend_home(&self) -> &'static str {
         self.pick(
-            "Windows Sandbox requires Pro/Enterprise. Install Sandboxie-Plus to detonate.",
-            "Windows Sandbox requiere Pro/Enterprise. Instalá Sandboxie-Plus para detonar.",
+            "Windows Sandbox is not available here; it needs Pro/Enterprise. Sandboxie-Plus works on every Windows edition.",
+            "Windows Sandbox no está disponible aquí; necesita Pro/Enterprise. Sandboxie-Plus funciona en cualquier edición de Windows.",
+        )
+    }
+
+    pub fn install_sandboxie(&self) -> &'static str {
+        self.pick("Install Sandboxie-Plus…", "Instalar Sandboxie-Plus…")
+    }
+
+    pub fn sandboxie_missing_hint(&self) -> &'static str {
+        self.pick(
+            "Sandboxie-Plus adds the shared-kernel backend; it works on every Windows edition.",
+            "Sandboxie-Plus añade el aislamiento de kernel compartido; funciona en cualquier edición de Windows.",
+        )
+    }
+
+    pub fn installing_sandboxie(&self) -> &'static str {
+        self.pick(
+            "waiting for the administrator prompt and downloading Sandboxie-Plus (about 25 MB)…",
+            "esperando la solicitud de administrador y descargando Sandboxie-Plus (unos 25 MB)…",
+        )
+    }
+
+    pub fn sandboxie_install_notice(&self) -> &'static str {
+        self.pick(
+            "accept the administrator prompt. When the installer finishes, load the sample in a sandbox again and the new backend will be listed.",
+            "acepta la solicitud de administrador. Cuando termine el instalador, vuelve a cargar la muestra en un aislamiento y aparecerá el nuevo backend.",
         )
     }
 
@@ -330,7 +355,7 @@ impl Strings {
                 format!("accept the administrator prompt; a reboot is required (log: {log})")
             }
             Lang::Es => {
-                format!("aceptá el pedido de administrador; hace falta reiniciar (log: {log})")
+                format!("acepta la solicitud de administrador; hace falta reiniciar (log: {log})")
             }
         }
     }
@@ -346,7 +371,7 @@ impl Strings {
              user profile, and needs no administrator.",
             "ClamAV suma su propio motor de firmas (~3,6 M) además de Defender\n\
              y YARA. La descarga son unos 500 MB, va a tu perfil de usuario\n\
-             y no necesita administrador.",
+             y no requiere administrador.",
         )
     }
 
@@ -379,6 +404,18 @@ impl Strings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sandboxie_offer_is_translated() {
+        let en = Strings { lang: Lang::En };
+        let es = Strings { lang: Lang::Es };
+
+        assert_eq!(en.install_sandboxie(), "Install Sandboxie-Plus…");
+        assert_eq!(es.install_sandboxie(), "Instalar Sandboxie-Plus…");
+        assert!(en.sandboxie_install_notice().contains("administrator"));
+        assert!(es.sandboxie_install_notice().contains("administrador"));
+        assert_ne!(en.installing_sandboxie(), es.installing_sandboxie());
+    }
 
     #[test]
     fn every_language_produces_every_verdict() {

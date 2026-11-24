@@ -16,7 +16,7 @@ use std::fs;
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 pub(crate) const DAEMON_PORT: u16 = 3311;
@@ -153,7 +153,7 @@ impl ClamDaemon {
             .try_clone()
             .map_err(|error| format!("cannot clone log: {error}"))?;
 
-        let mut child = Command::new(daemon)
+        let mut child = crate::download::hidden_command(daemon)
             .arg("-c")
             .arg(&config)
             .stdin(Stdio::null())
@@ -197,7 +197,7 @@ impl ClamDaemon {
 impl Drop for ClamDaemon {
     fn drop(&mut self) {
         // Ask politely first, then make sure the child is gone.
-        let stopped = Command::new(clamdscan_path())
+        let stopped = crate::download::hidden_command(clamdscan_path())
             .arg("-c")
             .arg(&self.config)
             .arg("--stop")
@@ -261,7 +261,7 @@ fn listener_is_our_daemon(work_dir: &Path, config: &Path) -> bool {
 /// `clamdscan --ping` is a protocol check, not a port check: a squatter that
 /// does not speak clamd fails it.
 fn ping_daemon(config: &Path) -> bool {
-    Command::new(clamdscan_path())
+    crate::download::hidden_command(clamdscan_path())
         .arg("-c")
         .arg(config)
         .arg("--ping")
@@ -273,7 +273,7 @@ fn ping_daemon(config: &Path) -> bool {
 }
 
 fn process_image_name(pid: u32) -> Option<String> {
-    let output = Command::new("tasklist")
+    let output = crate::download::hidden_command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .ok()?;

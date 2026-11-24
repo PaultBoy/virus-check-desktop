@@ -19,7 +19,7 @@
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::report::{Coverage, Detection, EngineReport, Fact, Severity};
@@ -183,7 +183,7 @@ fn run_scan(executable: &Path, target: &Path, output: &Path) -> Result<i32, RunE
     // An absolute path can never be read as an option.
     let target = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
 
-    let mut child = Command::new(executable)
+    let mut child = crate::download::hidden_command(executable)
         .arg("-Scan")
         .arg("-ScanType")
         .arg("3")

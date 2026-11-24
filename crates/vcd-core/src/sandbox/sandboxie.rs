@@ -66,7 +66,7 @@ pub(crate) fn detonate(
     let script = workspace.join("watch.ps1");
     fs::write(&script, WATCH_SCRIPT)?;
 
-    let status = Command::new("powershell")
+    let status = crate::download::hidden_command("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
         .arg("-StartExe")
@@ -180,7 +180,7 @@ fn configure_box(paths: &Sandboxie, network: bool) -> Result<(), SandboxError> {
         ("Enabled", "y"),
         ("AllowNetworkAccess", if network { "y" } else { "n" }),
     ] {
-        let output = Command::new(&paths.sbieini)
+        let output = crate::download::hidden_command(&paths.sbieini)
             .args(["set", BOX, key, value])
             .output()?;
         if !output.status.success() {

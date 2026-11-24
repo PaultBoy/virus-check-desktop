@@ -23,8 +23,10 @@ use serde::{Deserialize, Serialize};
 
 mod capabilities;
 mod sandboxie;
+mod sandboxie_install;
 
 pub use capabilities::{Backend, Edition, SandboxSupport, detect_support, enable_windows_sandbox};
+pub use sandboxie_install::install as install_sandboxie;
 
 const RUN_SCRIPT: &str = include_str!("sandbox/run.ps1");
 const SANDBOX_DESKTOP: &str = r"C:\Users\WDAGUtilityAccount\Desktop";
@@ -410,7 +412,7 @@ impl Drop for SessionGuard {
 /// Kill our session tree, and the server behind it only when no other session is
 /// running: a concurrent detonation owns its own VM.
 fn stop_session(session: &u32, known: &[(String, u32)]) {
-    let _ = Command::new("taskkill")
+    let _ = crate::download::hidden_command("taskkill")
         .args(["/PID", &session.to_string(), "/T", "/F"])
         .output();
 
@@ -432,14 +434,14 @@ fn stop_new_sessions(known: &[(String, u32)]) {
         {
             continue;
         }
-        let _ = Command::new("taskkill")
+        let _ = crate::download::hidden_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
 }
 
 fn sandbox_processes() -> Vec<(String, u32)> {
-    let Ok(output) = Command::new("tasklist")
+    let Ok(output) = crate::download::hidden_command("tasklist")
         .args(["/FO", "CSV", "/NH"])
         .output()
     else {

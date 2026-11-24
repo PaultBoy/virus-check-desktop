@@ -19,7 +19,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::report::{Coverage, Detection, EngineReport, Fact, Severity};
@@ -369,7 +369,7 @@ fn run_scan(
     // `--help` cannot make clamscan print usage and exit 0.
     let target = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
 
-    let mut command = Command::new(program);
+    let mut command = crate::download::hidden_command(program);
     command.args(prefix);
     command
         .arg("--no-summary")
