@@ -303,7 +303,7 @@ impl App {
 
         let title = self.strings.sandbox_title();
         let body = self.strings.sandbox_body();
-        let cancel = self.strings.cancel();
+        let not_now = self.strings.not_now();
         let booting = self.strings.booting_sandbox();
         let recommended = self.support.recommended();
         let backends = self.support.available();
@@ -374,11 +374,15 @@ impl App {
                 }
 
                 ui.add_space(6.0);
-                if ui.button(cancel).clicked() {
+                if ui.button(not_now).clicked() {
                     close = true;
                 }
             }
         });
+
+        if !detonating && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
 
         if close {
             self.show_sandbox_prompt = false;
