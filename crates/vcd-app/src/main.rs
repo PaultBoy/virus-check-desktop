@@ -587,11 +587,17 @@ impl App {
                         } else {
                             done as f32 / self.total as f32
                         };
-                        ui.add(
-                            egui::ProgressBar::new(ratio)
-                                .desired_width(220.0)
-                                .show_percentage(),
-                        );
+                        // The default track is almost the panel colour, so the
+                        // bar has no visible extent before it fills.
+                        let track = ui.visuals().widgets.inactive.bg_fill;
+                        ui.scope(|ui| {
+                            ui.visuals_mut().extreme_bg_color = track;
+                            ui.add(
+                                egui::ProgressBar::new(ratio)
+                                    .desired_width(220.0)
+                                    .show_percentage(),
+                            );
+                        });
                     }
                     Phase::Done => {
                         if let Some(summary) = &self.finished {

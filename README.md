@@ -138,7 +138,10 @@ them into a hive this tool does not decode, and the report says so.
 
 Caveats the report states for itself: Sandboxie shares the kernel, its process
 list is polling-based so very short-lived processes can be missed, and no
-observed behaviour is not proof of benign behaviour. Delete the detonation
+observed behaviour is not proof of benign behaviour. In Windows Sandbox the
+disposable guest's real-time protection is turned off for the run, so the sample
+is not killed before it acts; a sample that exits immediately is reported with
+its exit code and what that code means. Delete the detonation
 workspace (its path is reported) when you are done with the samples.
 
 ## Architecture

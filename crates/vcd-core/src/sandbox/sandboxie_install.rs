@@ -50,14 +50,30 @@ Get-ChildItem -LiteralPath $dir -Filter '*.exe' -ErrorAction SilentlyContinue |
 $path = Join-Path $dir ((New-Guid).Guid + '.exe')
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 if (-not (Test-Path -LiteralPath $curl)) { exit 3 }
-& $curl -L --fail --connect-timeout 30 --max-time 1800 -o $path '__URL__'
+& $curl -L --fail --ssl-no-revoke --connect-timeout 30 --max-time 1800 -o $path '__URL__'
 if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 3 }
 $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($hash -ne '__DIGEST__') { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 2 }
-& $path /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
-if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 5 }
+$exe = Join-Path $env:ProgramFiles 'Sandboxie-Plus\Start.exe'
+$installed = $false
+# The driver registration can fail on the first run on a machine that never had
+# it, and succeeds on a second pass; do that pass here instead of asking the user.
+for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+    & $path /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+    $code = $LASTEXITCODE
+    if ($code -ne 0 -and $code -ne 3010 -and $code -ne 1641) { continue }
+    for ($wait = 0; $wait -lt 20 -and -not $installed; $wait++) {
+        $svc = Get-Service -Name SbieSvc -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath $exe) -and ($null -ne $svc)) {
+            if ($svc.Status -ne 'Running') { Start-Service -Name SbieSvc -ErrorAction SilentlyContinue }
+            $installed = $true
+        } else {
+            Start-Sleep -Seconds 2
+        }
+    }
+}
 Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-if (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Sandboxie-Plus\Start.exe'))) { exit 5 }
+if (-not $installed) { exit 5 }
 exit 0
 "#;
 
@@ -148,6 +164,14 @@ mod tests {
         );
         assert!(script.contains("/SUPPRESSMSGBOXES"));
         assert!(script.contains("/NORESTART"));
+        assert!(
+            script.contains("$attempt -le 2"),
+            "a first-run failure is retried once instead of being handed to the user"
+        );
+        assert!(
+            script.contains("SbieSvc"),
+            "the service is what makes the install usable"
+        );
         assert!(
             !script.contains("Start-Process -FilePath $path"),
             "no interactive wizard is started"

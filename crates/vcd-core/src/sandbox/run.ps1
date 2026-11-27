@@ -25,6 +25,8 @@ $state = [ordered]@{
     finished         = $false
     duration_seconds = $duration
     sample           = $null
+    sample_exit_ms   = $null
+    sample_exit_code = $null
     processes        = @()
     connections      = @()
     dns              = @()
@@ -72,11 +74,28 @@ function Clip([string]$text, [int]$max) {
     return $text.Substring(0, $max) + '...'
 }
 
+# CreateProcess, not ShellExecute: an unsigned executable started through the
+# shell is held by SmartScreen, which nobody can answer inside the sandbox, and
+# the sample then never runs a single instruction.
+function Start-Sample([string]$file, [string[]]$arguments, [string]$workingDirectory) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $file
+    if ($arguments.Count -gt 0) { $info.Arguments = ($arguments -join ' ') }
+    $info.WorkingDirectory = $workingDirectory
+    $info.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($info)
+}
+
 # Everything alive before the payload starts is background noise.
 $initialPids = @{}
 foreach ($process in Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) {
     $initialPids[$process.ProcessId] = $true
 }
+
+# The guest is disposable and never touches the host: stop its real-time
+# protection so a sample is not killed before it can act. Best effort; if the
+# policy forbids it, the run continues and the caveat still applies.
+Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
 
 $beforeFiles = Snapshot-Files
 $beforeRegistry = Snapshot-Registry
@@ -94,23 +113,29 @@ if ($null -eq $sample) {
 
 $state.sample = $sample.Name
 $extension = $sample.Extension.ToLowerInvariant()
+$sampleProcess = $null
+$sampleStarted = Get-Date
 
 try {
     switch ($extension) {
-        { $_ -in '.exe', '.scr', '.com', '.pif', '.cpl', '.msi' } {
-            Start-Process -FilePath $sample.FullName -WorkingDirectory $payload
+        { $_ -in '.exe', '.scr', '.com', '.pif', '.cpl' } {
+            $sampleProcess = Start-Sample $sample.FullName @() $payload
+            $state.executed = $true
+        }
+        '.msi' {
+            $sampleProcess = Start-Sample "$env:WINDIR\System32\msiexec.exe" @('/i', "`"$($sample.FullName)`"") $payload
             $state.executed = $true
         }
         { $_ -in '.bat', '.cmd' } {
-            Start-Process -FilePath "$env:WINDIR\System32\cmd.exe" -ArgumentList '/c', "`"$($sample.FullName)`""
+            $sampleProcess = Start-Sample "$env:WINDIR\System32\cmd.exe" @('/c', "`"$($sample.FullName)`"") $payload
             $state.executed = $true
         }
         '.ps1' {
-            Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($sample.FullName)`""
+            $sampleProcess = Start-Sample "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($sample.FullName)`"") $payload
             $state.executed = $true
         }
         { $_ -in '.vbs', '.vbe', '.js', '.jse', '.wsf', '.hta' } {
-            Start-Process -FilePath "$env:WINDIR\System32\wscript.exe" -ArgumentList "`"$($sample.FullName)`""
+            $sampleProcess = Start-Sample "$env:WINDIR\System32\wscript.exe" @("`"$($sample.FullName)`"") $payload
             $state.executed = $true
         }
         default { $state.unsupported = $extension }
@@ -119,11 +144,28 @@ try {
     $state.error = $_.Exception.Message
 }
 
+# The sample is always in its own report, even when it exits before the first
+# poll: "nothing observed" must not mean "nothing was started".
+if ($null -ne $sampleProcess) {
+    $state.processes += [ordered]@{
+        pid     = $sampleProcess.Id
+        parent  = $PID
+        name    = $sampleProcess.ProcessName
+        path    = Clip $sample.FullName 260
+        command = Clip $sample.FullName 300
+    }
+}
+
 $knownConnections = @{}
 $deadline = (Get-Date).AddSeconds($duration)
 $lastSave = Get-Date
 
 while ((Get-Date) -lt $deadline) {
+    if ($null -ne $sampleProcess -and $null -eq $state.sample_exit_ms -and $sampleProcess.HasExited) {
+        $state.sample_exit_ms = [int]((Get-Date) - $sampleStarted).TotalMilliseconds
+        $state.sample_exit_code = $sampleProcess.ExitCode
+    }
+
     if ($state.processes.Count -lt 250) {
         foreach ($process in Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) {
             if ($initialPids.ContainsKey($process.ProcessId)) { continue }
@@ -141,7 +183,13 @@ while ((Get-Date) -lt $deadline) {
 
     foreach ($connection in Get-NetTCPConnection -ErrorAction SilentlyContinue |
         Where-Object { $_.State -in 'Established', 'SynSent' }) {
-        $key = "$($connection.RemoteAddress):$($connection.RemotePort)-$($connection.OwningProcess)"
+        $owner = $connection.OwningProcess
+        # Only connections owned by a process this run started; otherwise the
+        # sandbox's own telemetry is the whole list and the sample's traffic
+        # cannot be told from the system's.
+        if (-not ($state.processes | Where-Object { $_.pid -eq $owner } | Select-Object -First 1)) { continue }
+
+        $key = "$($connection.RemoteAddress):$($connection.RemotePort)-$owner"
         if (-not $knownConnections.ContainsKey($key)) {
             $knownConnections[$key] = $true
             $state.connections += [ordered]@{
@@ -157,7 +205,7 @@ while ((Get-Date) -lt $deadline) {
         $lastSave = Get-Date
     }
 
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 250
 }
 
 $state.dns = @(Get-DnsClientCache -ErrorAction SilentlyContinue |

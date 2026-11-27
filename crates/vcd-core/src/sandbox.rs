@@ -115,6 +115,11 @@ pub(crate) struct SandboxReport {
     pub(crate) files_modified: Vec<String>,
     #[serde(default)]
     pub(crate) registry_changed: Vec<String>,
+    /// How the sample process ended, measured from the guest's own clock.
+    #[serde(default)]
+    pub(crate) sample_exit_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) sample_exit_code: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,12 +255,25 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
     caveats.push(
         "telemetry is written from inside the sandbox; a sample that targets the harness can tamper with it".to_string(),
     );
+    caveats.push(
+        "real-time protection inside the disposable sandbox is disabled for the run, so the sample can act"
+            .to_string(),
+    );
     caveats.push("no observed behaviour is not proof of benign behaviour".to_string());
     if timed_out {
         caveats.push(format!(
             "the sandbox was stopped after {} s without a final report",
             options.timeout.as_secs()
         ));
+    }
+    if let Some(exit_ms) = report.sample_exit_ms {
+        caveats.push(describe_exit(exit_ms, report.sample_exit_code));
+        if exit_ms < 2_000 && report.processes.len() <= 1 && report.files_created.is_empty() {
+            caveats.push(
+                "it exited before acting: the guest's real-time protection can block a sample, and nothing observed is not proof of benign behaviour"
+                    .to_string(),
+            );
+        }
     }
 
     Ok(Detonation {
@@ -367,6 +385,32 @@ pub(crate) fn read_report(path: &Path) -> Option<SandboxReport> {
     report.files_modified.truncate(MAX_REPORT_ENTRIES);
     report.registry_changed.truncate(MAX_REPORT_ENTRIES);
     Some(report)
+}
+
+/// Windows status values a sample most often dies with before it can act. The
+/// number alone says nothing to a person; the reason is the useful part.
+fn exit_code_hint(code: i64) -> Option<&'static str> {
+    Some(match code as u32 {
+        0xC000_0135 => "a DLL it needs is not present in the sandbox",
+        0xC000_0139 => "an entry point it needs is missing",
+        0xC000_007B => "the image is for another architecture or is corrupted",
+        0xC000_0005 => "it crashed with an access violation",
+        0xC000_0142 => "the image is not a valid Windows application",
+        _ => return None,
+    })
+}
+
+/// How the sample ended, in words the report can show as-is.
+pub(crate) fn describe_exit(exit_ms: u64, code: Option<i64>) -> String {
+    match code {
+        Some(code) => {
+            let hint = exit_code_hint(code)
+                .map(|hint| format!(" ({hint})"))
+                .unwrap_or_default();
+            format!("the sample process exited after {exit_ms} ms with code {code}{hint}")
+        }
+        None => format!("the sample process exited after {exit_ms} ms"),
+    }
 }
 
 fn dropped_files(directory: &Path) -> Vec<PathBuf> {
@@ -511,6 +555,14 @@ mod tests {
         .expect_err("missing sample");
 
         assert!(matches!(error, SandboxError::Io(_)));
+    }
+
+    #[test]
+    fn a_missing_dll_exit_is_explained() {
+        // 0xC0000135, what a sample dies with when the sandbox lacks a runtime.
+        let text = describe_exit(59, Some(-1_073_741_515));
+        assert!(text.contains("exited after 59 ms"));
+        assert!(text.contains("DLL"), "{text}");
     }
 
     fn report_path(tag: &str) -> PathBuf {

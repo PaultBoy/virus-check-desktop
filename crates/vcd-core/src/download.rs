@@ -66,7 +66,16 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 /// Download to `destination` with `curl`, falling back to PowerShell.
+///
+/// Windows `curl` uses Schannel, which refuses the connection (error 35) when it
+/// cannot confirm certificate revocation, which is common on a machine that never
+/// fetched this host before or sits behind a TLS-inspecting proxy. The check adds
+/// nothing here: the file is pinned by SHA-256, so a tampered download is refused
+/// afterwards either way. PowerShell is a real second chance, not just a
+/// missing-curl fallback: it uses .NET's TLS stack and the machine proxy settings.
 pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
+    let mut failure = None;
+
     // curl.exe ships with Windows 10 1803+.
     let curl = system32("curl.exe");
     if curl.is_file() {
@@ -74,6 +83,7 @@ pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
             .args([
                 "-L",
                 "--fail",
+                "--ssl-no-revoke",
                 "--connect-timeout",
                 "30",
                 "--max-time",
@@ -82,17 +92,15 @@ pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
             ])
             .arg(destination)
             .arg(url)
-            .status()
-            .map_err(|error| format!("cannot run curl: {error}"))?;
+            .status();
 
-        if status.success() {
-            return Ok(());
+        match status {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => failure = Some(format!("curl exited with {status}")),
+            Err(error) => failure = Some(format!("cannot run curl: {error}")),
         }
 
-        // curl leaves the output file behind on failure, and a later run must
-        // not be able to mistake it for a good download.
         let _ = fs::remove_file(destination);
-        return Err(format!("curl exited with {status}"));
     }
 
     let status = hidden_command(powershell())
@@ -103,11 +111,15 @@ pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot run powershell: {error}"))?;
 
     if status.success() {
-        Ok(())
-    } else {
-        let _ = fs::remove_file(destination);
-        Err(format!("download failed with {status}"))
+        return Ok(());
     }
+
+    let _ = fs::remove_file(destination);
+
+    Err(match failure {
+        Some(first) => format!("download failed with {status} (curl first: {first})"),
+        None => format!("download failed with {status}"),
+    })
 }
 
 /// Refuse anything that is not the exact file this build expects. A mismatch

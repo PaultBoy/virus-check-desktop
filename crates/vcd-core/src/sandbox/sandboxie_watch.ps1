@@ -21,6 +21,8 @@ $state = [ordered]@{
     finished_at      = $null
     duration_seconds = $Seconds
     sample           = (Split-Path $Sample -Leaf)
+    sample_exit_ms   = $null
+    sample_exit_code = $null
     processes        = @()
     connections      = @()
     dns              = @()
@@ -41,6 +43,8 @@ if (Test-Path $BoxRoot) {
     }
 }
 
+$sampleStarted = Get-Date
+$samplePid = $null
 # `-ArgumentList` joins its elements with spaces, so the sample path has to be
 # quoted here or a profile like "C:\Users\John Smith" is split apart and
 # Start.exe never finds the file.
@@ -61,6 +65,7 @@ while (-not $state.executed -and (Get-Date) -lt $launchDeadline) {
         $command = $process.CommandLine
         if ($image -eq $Sample -or ($command -and $command.Contains($Sample))) {
             $state.executed = $true
+            $samplePid = [int]$process.ProcessId
             break
         }
     }
@@ -84,6 +89,11 @@ function Save-State([bool]$final) {
 }
 
 while ((Get-Date) -lt $deadline) {
+    if ($null -ne $samplePid -and $null -eq $state.sample_exit_ms -and
+        $null -eq (Get-Process -Id $samplePid -ErrorAction SilentlyContinue)) {
+        $state.sample_exit_ms = [int]((Get-Date) - $sampleStarted).TotalMilliseconds
+    }
+
     foreach ($process in Get-CimInstance Win32_Process) {
         $processId = [int]$process.ProcessId
         if ($beforePids.ContainsKey($processId)) { continue }
@@ -115,7 +125,7 @@ while ((Get-Date) -lt $deadline) {
         $lastSave = Get-Date
     }
 
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 250
 }
 
 & $StartExe "/box:$Box" /terminate | Out-Null

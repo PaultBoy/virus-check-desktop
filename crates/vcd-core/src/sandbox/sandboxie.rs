@@ -152,6 +152,15 @@ pub(crate) fn detonate(
                 .to_string(),
         );
     }
+    if let Some(exit_ms) = report.sample_exit_ms {
+        caveats.push(super::describe_exit(exit_ms, report.sample_exit_code));
+        if exit_ms < 2_000 && report.processes.len() <= 1 && report.files_created.is_empty() {
+            caveats.push(
+                "it exited before acting: the host's real-time protection can block a sample, and nothing observed is not proof of benign behaviour"
+                    .to_string(),
+            );
+        }
+    }
 
     Ok(Detonation {
         sample: sample.to_path_buf(),
