@@ -175,6 +175,14 @@ Fix: `sandboxie_watch.ps1` no longer gives the sample to `Start.exe`. It gives i
 
 Not verified on this machine: Sandboxie is no longer installed here, so the change is syntax-checked (`[scriptblock]::Create`) but not exercised. It needs a run on the machine that has Sandboxie. If a sample still shows nothing, the next distinction is in the report: `executed` false means the interpreter never started, and `sample_exit_ms` with a short time means the sample started and the host's protection killed it.
 
+L38. The user installed Sandboxie on the test machine, so L37 could finally be exercised instead of reasoned about. Three runs of a synthetic sample that writes a marker, spawns a child and sleeps:
+
+1. First run: `executed true`, the sample and its file were captured - the interpreter path works, and the ShellExecute wall is gone in Sandboxie too. But the exit caveat said 1,610 ms for a sample that sleeps 15 s, and the spawned `ping` never appeared.
+2. Second run, with `start`/`end` markers: both files were captured, so the sample lived the full 12 s. The caveat still said 1,018 ms. That number belongs to `Start.exe`, whose command line contains the sample path and which exits about a second after launching; the launcher matched it first and stopped looking. The missing `ping` was a different thing: with the box's network blocked, `ping` fails in milliseconds, below the 250 ms sampling floor.
+3. Fix: the process **image** match now wins and is what the exit caveat follows; a command-line match only sets `executed`. For `.bat`/`.ps1` the interpreter is the lifetime proxy, and `.msi` is exempt because `msiexec` returns early. Re-run with a child that lives 6 s: 3 processes (`cmd.exe`, the sample, `powershell.exe` as its child), 7 files (including the child's own profile and CatRoot2 writes), and `the sample process exited after 13365 ms` - the sample sleeps 12 s.
+
+So both backends now run the sample and report what it did, each verified on a real machine: Windows Sandbox with 20,354 ms and 2 files, Sandboxie with 13,365 ms, 3 processes and 7 files. The remaining limits are stated, not hidden: 250 ms polling can miss a child that dies faster (a blocked `ping` does), and Sandboxie still runs on the host, so its real-time protection stays enabled.
+
 
 
 

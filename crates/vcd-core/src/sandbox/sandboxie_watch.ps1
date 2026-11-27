@@ -85,19 +85,30 @@ if ($null -ne $launcher) {
 # was spawned. It cannot be an image match: `.bat`, `.ps1` and `.vbs` run through
 # an interpreter, so the sample appears in the command line instead.
 $launchDeadline = (Get-Date).AddSeconds(5)
-while (-not $state.executed -and (Get-Date) -lt $launchDeadline) {
+$expectsImage = $extension -match '^\.(exe|com|scr|pif|cpl)$'
+$interpreterPid = $null
+while ((($expectsImage -and $null -eq $samplePid) -or (-not $state.executed)) -and
+       (Get-Date) -lt $launchDeadline) {
     foreach ($process in Get-CimInstance Win32_Process) {
         if ($beforePids.ContainsKey([int]$process.ProcessId)) { continue }
-        $image = $process.ExecutablePath
-        $command = $process.CommandLine
-        if ($image -eq $Sample -or ($command -and $command.Contains($Sample))) {
-            $state.executed = $true
+        if ($process.ExecutablePath -eq $Sample) {
+            # The sample itself: this is the process whose lifetime is reported.
             $samplePid = [int]$process.ProcessId
-            break
+            $state.executed = $true
+        } elseif ($process.CommandLine -and $process.CommandLine.Contains($Sample)) {
+            # The interpreter that starts it. Start.exe carries the sample path in
+            # its own command line and exits in about a second, so it is never
+            # taken for the sample; for scripts the interpreter is the closest
+            # thing to the sample's lifetime.
+            if ($null -eq $interpreterPid) { $interpreterPid = [int]$process.ProcessId }
+            $state.executed = $true
         }
     }
-    if (-not $state.executed) { Start-Sleep -Milliseconds 200 }
+    if (-not $state.executed -or ($expectsImage -and $null -eq $samplePid)) {
+        Start-Sleep -Milliseconds 200
+    }
 }
+if ($null -eq $samplePid -and $extension -notmatch '^\.msi$') { $samplePid = $interpreterPid }
 if (-not $state.executed -and -not $state.error) {
     $state.error = 'the sample did not start inside the box'
 }
