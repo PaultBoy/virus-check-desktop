@@ -45,13 +45,40 @@ if (Test-Path $BoxRoot) {
 
 $sampleStarted = Get-Date
 $samplePid = $null
-# `-ArgumentList` joins its elements with spaces, so the sample path has to be
-# quoted here or a profile like "C:\Users\John Smith" is split apart and
-# Start.exe never finds the file.
-try {
-    Start-Process -FilePath $StartExe -ArgumentList @("/box:$Box", '/silent', "`"$Sample`"") | Out-Null
-} catch {
-    $state.error = $_.Exception.Message
+$extension = [IO.Path]::GetExtension($Sample).ToLowerInvariant()
+$launcher = $null
+$launcherArgs = @()
+switch -Regex ($extension) {
+    '^\.(exe|com|scr|pif|cpl|bat|cmd)$' {
+        $launcher = "$env:WINDIR\System32\cmd.exe"
+        $launcherArgs = @('/c', "`"`"$Sample`"`"")
+    }
+    '^\.ps1$' {
+        $launcher = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $launcherArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$Sample`"")
+    }
+    '^\.(vbs|vbe|js|jse|wsf|hta)$' {
+        $launcher = "$env:WINDIR\System32\wscript.exe"
+        $launcherArgs = @("`"$Sample`"")
+    }
+    '^\.msi$' {
+        $launcher = "$env:WINDIR\System32\msiexec.exe"
+        $launcherArgs = @('/i', "`"$Sample`"")
+    }
+    default { $state.unsupported = $extension }
+}
+
+# Start.exe hands a program to ShellExecuteEx, which can leave an unsigned
+# executable held by SmartScreen without ever running it. A signed interpreter
+# is started instead, and it creates the sample with CreateProcess inside the
+# box: the child inherits the sandbox, and the shell is never involved.
+if ($null -ne $launcher) {
+    try {
+        $startArgs = @("/box:$Box", '/silent', $launcher) + $launcherArgs
+        Start-Process -FilePath $StartExe -ArgumentList $startArgs | Out-Null
+    } catch {
+        $state.error = $_.Exception.Message
+    }
 }
 
 # `executed` means the sample really started inside the box, not that Start.exe

@@ -169,6 +169,12 @@ L36. Four reports from a second machine, and the fourth exposed why detonation "
 
 The lesson worth keeping: "no observed behaviour" had three different causes here - a sample held by the shell, a sample that died on a missing runtime, and noise from the sandbox itself - and the report now distinguishes all three instead of printing an empty list.
 
+L37. The user confirmed the same symptom with Sandboxie, which sent me to Sandboxie's own source. `Sandboxie/apps/start/start.cpp` (v1.19.1) shows that `Start.exe` hands a program to **`ShellExecuteEx`**; the `CreateProcess` branch exists only when `SBIE_SERVICE_NAME` is set, and that branch also calls `SbieDll_SetFakeAdmin(TRUE)`, so it is not usable for a detonation without changing what the sample sees. That is the same shell path that held unsigned samples in Windows Sandbox, so Sandboxie had the same defect by a different door, plus a design constraint: the host's real-time protection cannot be disabled the way a disposable guest's can.
+
+Fix: `sandboxie_watch.ps1` no longer gives the sample to `Start.exe`. It gives it a **signed interpreter** - `cmd /c` for `.exe/.com/.scr/.pif/.cpl/.bat/.cmd`, `powershell -File` for `.ps1`, `wscript` for the script types, `msiexec /i` for `.msi` - and the interpreter creates the sample with `CreateProcess` inside the box. The child inherits the box from the interpreter, and the shell is never in the path. Unknown types are reported as unsupported instead of being handed to the shell. The interpreter's command line contains the sample path, so the existing `executed` and `samplePid` detection still works, and the tree filter keeps the sample and its descendants.
+
+Not verified on this machine: Sandboxie is no longer installed here, so the change is syntax-checked (`[scriptblock]::Create`) but not exercised. It needs a run on the machine that has Sandboxie. If a sample still shows nothing, the next distinction is in the report: `executed` false means the interpreter never started, and `sample_exit_ms` with a short time means the sample started and the host's protection killed it.
+
 
 
 
