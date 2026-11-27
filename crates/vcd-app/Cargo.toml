@@ -11,6 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 vcd-core = { path = "../vcd-core" }
-eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
+# eframe builds wgpu without a Windows backend (default-features = false, no
+# `dx12`), so wgpu would enumerate zero adapters. This enables it; Cargo unifies
+# the features with eframe's.
+wgpu = { version = "24", default-features = false, features = ["dx12"] }
 rfd = "0.18"
 serde_json.workspace = true

@@ -183,6 +183,14 @@ L38. The user installed Sandboxie on the test machine, so L37 could finally be e
 
 So both backends now run the sample and report what it did, each verified on a real machine: Windows Sandbox with 20,354 ms and 2 files, Sandboxie with 13,365 ms, 3 processes and 7 files. The remaining limits are stated, not hidden: 250 ms polling can miss a child that dies faster (a blocked `ping` does), and Sandboxie still runs on the host, so its real-time protection stays enabled.
 
+L39. The user tried to run the desktop app itself inside Windows Sandbox and it exited with code 1. The CLI was fine there (`vcd 0.1.12`, no `vcruntime140.dll` thanks to the static CRT), so this was the GUI. `eframe` was built with `glow` only, and a GPU-less guest has no OpenGL 3.3.
+
+First attempt: enable eframe's `wgpu` feature and try wgpu before glow. In the sandbox wgpu still reported **zero adapters**, and even `force_fallback_adapter` returned none. The reason was not the VM: **eframe depends on wgpu with `default-features = false` and only `metal`/`webgpu`**, so the Windows backend was not compiled at all. Adding `wgpu = { version = "24", default-features = false, features = ["dx12"] }` to the app makes Cargo unify the features, and the DX12 backend appears.
+
+Verified with a one-off probe and then the real app, both inside Windows Sandbox: the probe lists one adapter (`Microsoft Basic Render Driver`, type Cpu, i.e. WARP) and the app **stays running with a window**. On the host it renders through the real GPU (DX12), and OpenGL stays as the fallback when wgpu cannot start. The binary grows from 22.8 MB to 28.5 MB, which is the price of the second backend; the CLI is untouched at 18.3 MB.
+
+Also measured along the way: Windows Sandbox with `<VGpu>Enable</VGpu>` still gave WARP rather than the host GPU, so the software path is the one that matters there; and the earlier `.wsb` probe failure was a wedged sandbox left by killing sessions, not the binaries.
+
 
 
 

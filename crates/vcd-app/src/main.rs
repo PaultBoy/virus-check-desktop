@@ -22,7 +22,18 @@ use vcd_core::{
 use worker::{Command, Event, Worker};
 
 fn main() -> eframe::Result {
+    // A VM without OpenGL 3.3 (Windows Sandbox, a plain Hyper-V guest) can still
+    // present through Direct3D 12; glow is the fallback for machines where wgpu
+    // cannot start.
+    match run(eframe::Renderer::Wgpu) {
+        Ok(()) => Ok(()),
+        Err(_) => run(eframe::Renderer::Glow),
+    }
+}
+
+fn run(renderer: eframe::Renderer) -> eframe::Result {
     let options = eframe::NativeOptions {
+        renderer,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([900.0, 520.0])

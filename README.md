@@ -102,7 +102,9 @@ cargo run -p vcd-app --release
 or run `target/release/virus-check-desktop.exe` (single file, no runtime to
 install). Drag a file or a folder onto the window, or use the buttons. The
 window never scans on the UI thread: a worker owns the engines, so they are
-built once and the list fills as files finish. Selecting a row shows the
+built once and the list fills as files finish. It presents through Direct3D 12
+(with software WARP when there is no GPU, so it also runs inside a VM) and falls
+back to OpenGL when that is unavailable. Selecting a row shows the
 hashes, per-engine facts and findings; **Copy JSON** exports that report. If
 ClamAV is missing, the app opens a setup dialog that installs it into the user
 profile with visible progress and no administrator prompt. The interface follows
