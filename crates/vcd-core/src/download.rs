@@ -23,8 +23,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// bar is off (it makes `Invoke-WebRequest` an order of magnitude slower on a
 /// large file) and the whole request is bounded like the curl it replaces.
 const POWERSHELL_DOWNLOAD: &str = "$ProgressPreference = 'SilentlyContinue'; \
-     Invoke-WebRequest -Uri $env:VCD_DOWNLOAD_URL -OutFile $env:VCD_DOWNLOAD_TARGET \
-     -UseBasicParsing -TimeoutSec 1800";
+     $request = @{ Uri = $env:VCD_DOWNLOAD_URL; OutFile = $env:VCD_DOWNLOAD_TARGET; \
+     UseBasicParsing = $true; TimeoutSec = 1800 }; \
+     if ($env:VCD_DOWNLOAD_UA) { $request.UserAgent = $env:VCD_DOWNLOAD_UA }; \
+     Invoke-WebRequest @request";
 
 /// A console program with no window of its own.
 pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -77,27 +79,38 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
 /// afterwards either way. PowerShell is a real second chance, not just a
 /// missing-curl fallback: it uses .NET's TLS stack and the machine proxy settings.
 pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
+    fetch_as(url, destination, None)
+}
+
+/// Same, with a caller-chosen `User-Agent`. ClamAV's CDN answers 403 to curl's
+/// default agent and 200 to `clamav/<version>`.
+pub(crate) fn fetch_as(
+    url: &str,
+    destination: &Path,
+    user_agent: Option<&str>,
+) -> Result<(), String> {
     let mut failure = None;
 
     // curl.exe ships with Windows 10 1803+.
     let curl = system32("curl.exe");
     if curl.is_file() {
-        let status = hidden_command(&curl)
-            .args([
-                "-L",
-                "--fail",
-                "--ssl-no-revoke",
-                "--connect-timeout",
-                "30",
-                "--max-time",
-                "1800",
-                "-o",
-            ])
-            .arg(destination)
-            .arg(url)
-            .status();
+        let mut command = hidden_command(&curl);
+        command.args([
+            "-L",
+            "--fail",
+            "--ssl-no-revoke",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "1800",
+            "-o",
+        ]);
+        command.arg(destination).arg(url);
+        if let Some(user_agent) = user_agent {
+            command.arg("-A").arg(user_agent);
+        }
 
-        match status {
+        match command.status() {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => failure = Some(format!("curl exited with {status}")),
             Err(error) => failure = Some(format!("cannot run curl: {error}")),
@@ -106,11 +119,16 @@ pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
         let _ = fs::remove_file(destination);
     }
 
-    let status = hidden_command(powershell())
+    let mut command = hidden_command(powershell());
+    command
         .args(["-NoProfile", "-Command", POWERSHELL_DOWNLOAD])
         .env("VCD_DOWNLOAD_URL", url)
-        .env("VCD_DOWNLOAD_TARGET", destination)
-        .status();
+        .env("VCD_DOWNLOAD_TARGET", destination);
+    if let Some(user_agent) = user_agent {
+        command.env("VCD_DOWNLOAD_UA", user_agent);
+    }
+
+    let status = command.status();
 
     let status = match status {
         Ok(status) => status,
@@ -246,7 +264,7 @@ mod tests {
 
     #[test]
     fn the_powershell_fallback_is_bounded() {
-        assert!(POWERSHELL_DOWNLOAD.contains("-TimeoutSec 1800"));
+        assert!(POWERSHELL_DOWNLOAD.contains("TimeoutSec = 1800"));
         assert!(POWERSHELL_DOWNLOAD.contains("$ProgressPreference"));
     }
 

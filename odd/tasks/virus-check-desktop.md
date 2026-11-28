@@ -210,6 +210,14 @@ Confirmed and fixed:
 
 Verified: `fmt`, `clippy -D warnings`, **121 tests** (2 ignored), release build, the Sandboxie 12 s `.bat` at 14,106 ms, and the GUI rendering. Not verified: the 3010/reboot install path (needs an elevated install and a reboot).
 
+L41. `vcd clamav install` failed inside Windows Sandbox with `freshclam exited with exit code: 5`. Exit 5 is not in the freshclam manual; `libfreshclam.h` defines `FC_ECONNECTION = 5`, and two very different things produce it.
+
+Reproduced in a sandbox with the host's ClamAV tree mapped and networking enabled: freshclam's libcurl/OpenSSL reported `SSL Trust Anchors: no trust anchors configured` and `unable to get local issuer certificate (20)`. The sandbox's `LocalMachine\Root` has **16** roots and no Google Trust Services; Schannel (curl) works because Windows fetches missing roots dynamically, and OpenSSL does not. freshclam ignores `SSL_CERT_FILE` and `CURL_CA_BUNDLE` **on Windows by design**: `set_tls_ca_bundle()` is compiled out under `_WIN32` (the help text is guarded the same way). A 200 KB Mozilla bundle fetched with curl was ignored too.
+
+Fix: when freshclam exits with 5, the three databases (`main.cvd`, `daily.cvd`, `bytecode.cvd`) are fetched with `curl` (Schannel, so the root store problem disappears) and **verified by loading them**: `ClamAvDirect::load` runs `cl_load`, which checks the CVD signatures against `certs/clamav.crt`. A second wall appeared here: the CDN answers **403** to curl's default User-Agent and **200** to `clamav/1.5.5 (OS: win; ...)`, so the fallback sends the ClamAV agent. `freshclam.conf` now also names `CVDCertsDirectory`, which the shipped sample documents and our config was missing.
+
+Verified end to end inside Windows Sandbox with the CLI: `vcd clamav install` exits **0**, prints `ClamAV is ready`, and `vcd clamav status` lists the portable tree. The CA-bundle experiment was removed after proving it is a no-op on Windows.
+
 
 
 

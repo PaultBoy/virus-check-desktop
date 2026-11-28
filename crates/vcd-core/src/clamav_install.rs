@@ -174,10 +174,14 @@ pub fn install_with(progress: &mut dyn FnMut(InstallStep)) -> Result<PathBuf, St
         .status()
         .map_err(|error| format!("cannot run freshclam: {error}"))?;
     if !status.success() {
-        return Err(format!(
-            "freshclam exited with {status}; run it again from {}",
-            root.display()
-        ));
+        let failure = freshclam_failure(&status);
+        if status.code() == Some(5) {
+            download_databases(&root, &database).map_err(|fallback| {
+                format!("{failure}; the fallback download also failed: {fallback}")
+            })?;
+        } else {
+            return Err(format!("{failure}; ClamAV tree: {}", root.display()));
+        }
     }
 
     if !database_ready(&root) {
@@ -189,6 +193,60 @@ pub fn install_with(progress: &mut dyn FnMut(InstallStep)) -> Result<PathBuf, St
 
     progress(InstallStep::Ready);
     Ok(root)
+}
+
+/// `freshclam` exits with an `fc_error_t` value, not a documented shell code:
+/// `libfreshclam.h` defines `FC_ECONNECTION = 5`, which covers both a missing
+/// network and a TLS handshake with no trusted roots.
+fn freshclam_hint(code: Option<i32>) -> Option<&'static str> {
+    Some(match code? {
+        5 => {
+            "it could not reach the update server: no network, or no trusted certificate store; if this runs inside Windows Sandbox, enable networking"
+        }
+        52 => "the connection to the update server failed",
+        54 => "the downloaded database failed its signature check",
+        56 | 40 => "freshclam rejected its configuration",
+        57 => "it could not create a file in the database directory",
+        59 => "the update mirrors are not synchronized yet; try again in a few minutes",
+        _ => return None,
+    })
+}
+
+fn freshclam_failure(status: &std::process::ExitStatus) -> String {
+    match freshclam_hint(status.code()) {
+        Some(hint) => format!("freshclam exited with {status}: {hint}"),
+        None => format!("freshclam exited with {status}"),
+    }
+}
+
+/// `freshclam`'s libcurl ignores `SSL_CERT_FILE`/`CURL_CA_BUNDLE` on Windows
+/// (`set_tls_ca_bundle` is compiled out), and a Windows Sandbox image ships 16
+/// root certificates with no dynamic update, so OpenSSL cannot validate the CDN
+/// while Schannel can. When freshclam fails to connect, the three databases are
+/// fetched with `curl` instead, and libclamav verifies their CVD signatures when
+/// the engine loads them, which is the check that matters.
+fn download_databases(root: &Path, database: &Path) -> Result<(), String> {
+    if let Ok(entries) = fs::read_dir(database) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("tmp.") {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    let user_agent = format!("clamav/{CLAMAV_VERSION} (OS: win; ARCH: x86_64; CPU: x86_64)");
+    for name in ["main.cvd", "daily.cvd", "bytecode.cvd"] {
+        let target = database.join(name);
+        download::fetch_as(
+            &format!("https://database.clamav.net/{name}"),
+            &target,
+            Some(&user_agent),
+        )?;
+    }
+
+    crate::engines::clamav_direct::ClamAvDirect::load(root)
+        .map_err(|error| format!("the downloaded databases do not load: {error}"))?;
+    Ok(())
 }
 
 fn msi_url() -> String {
@@ -232,8 +290,9 @@ fn extract(msi: &Path, base: &Path) -> Result<(), String> {
 /// Write then rename, so an interrupted run never leaves half a config.
 fn write_freshclam_config(config: &Path, database: &Path, root: &Path) -> Result<(), String> {
     let body = format!(
-        "DatabaseDirectory \"{}\"\nUpdateLogFile \"{}\"\nDatabaseMirror database.clamav.net\n",
+        "DatabaseDirectory \"{}\"\nCVDCertsDirectory \"{}\"\nUpdateLogFile \"{}\"\nDatabaseMirror database.clamav.net\n",
         database.display(),
+        root.join("certs").display(),
         root.join("freshclam.log").display()
     );
 
@@ -268,6 +327,38 @@ mod tests {
                 .chars()
                 .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
         );
+    }
+
+    #[test]
+    fn a_freshclam_connection_failure_points_at_the_sandbox() {
+        let hint = freshclam_hint(Some(5)).expect("code 5 has a hint");
+        assert!(hint.contains("Windows Sandbox"));
+        assert!(freshclam_hint(Some(52)).is_some());
+        assert!(freshclam_hint(Some(999)).is_none());
+    }
+
+    #[test]
+    fn the_freshclam_config_names_the_shipped_certificates() {
+        let root = std::env::temp_dir().join(format!(
+            "vcd-freshclam-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        let database = root.join("database");
+        fs::create_dir_all(&database).expect("create database dir");
+
+        let config = root.join("freshclam.conf");
+        write_freshclam_config(&config, &database, &root).expect("write config");
+
+        let body = fs::read_to_string(&config).expect("read config");
+        assert!(body.contains("CVDCertsDirectory"));
+        assert!(body.contains("certs"));
+        assert!(body.contains("DatabaseMirror database.clamav.net"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
