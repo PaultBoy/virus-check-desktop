@@ -395,6 +395,7 @@ impl Strings {
                 InstallStep::Downloading => "Descargando ClamAV (unos 214 MB)…",
                 InstallStep::Extracting => "Extrayendo sin instalar…",
                 InstallStep::Updating => "Descargando la base de firmas (unos 300 MB)…",
+                InstallStep::Verifying => "Comprobando la base de firmas…",
                 InstallStep::Ready => "ClamAV está listo",
             },
         }

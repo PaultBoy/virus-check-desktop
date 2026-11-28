@@ -3382,7 +3382,7 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "vcd-app"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "eframe",
  "rfd",
@@ -3393,7 +3393,7 @@ dependencies = [
 
 [[package]]
 name = "vcd-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "serde_json",
  "vcd-core",
@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "vcd-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "libloading",
  "md-5",

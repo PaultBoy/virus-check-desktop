@@ -218,6 +218,20 @@ Fix: when freshclam exits with 5, the three databases (`main.cvd`, `daily.cvd`, 
 
 Verified end to end inside Windows Sandbox with the CLI: `vcd clamav install` exits **0**, prints `ClamAV is ready`, and `vcd clamav status` lists the portable tree. The CA-bundle experiment was removed after proving it is a no-op on Windows.
 
+L42. Review of `e41a361..HEAD` with three lenses (risk, resilience, reliability) plus a refuter, on subagents. Risk confirmed the core claim (`cl_load` rejects a CVD whose embedded signature was blanked or altered; `sigtool -i` says `Verification OK`) and found that the fallback writes over the live database. Resilience and reliability found the same class, plus the hints.
+
+Fixes applied:
+- `database.verified` marker: `database_ready` is no longer existence-only, so a fallback that failed on the third file or on the load can never make the next click (GUI Retry) report `ClamAV is ready`. A tree left by an earlier version is verified once and marked, without re-downloading.
+- Downloads write `<name>.part` and rename after `fetch` succeeds; any fallback failure clears the database files, so no truncated CVD survives.
+- `clear_staging` handles `tmp.*` files and `*.part` directories or files, and runs before freshclam and again after it: libclamav loads every `*.cvd` in the directory, so a freshclam `tmp.main.cvd` would have poisoned the load.
+- The hunt table now matches the shipped `fc_error_t` (0..=19): 5, 7, 9, 10, 11, 12, 17; 52/54/56/57/59 are not codes freshclam returns.
+- The fallback is triggered by the observed condition (freshclam failed and the database is incomplete), not one guessed exit code.
+- `InstallStep::Verifying` and a fail-fast `InstallLock` (named mutex, same pattern as `DetonationLock`) serialise GUI and CLI installs.
+- The verification error names the database directory and the freshclam log.
+- Refuted: `VCD_DOWNLOAD_UA` cannot leak, `Command::env` never touches the parent environment.
+
+Verified with subagents over the diff and against the shipped headers; then in Windows Sandbox with the release binary: install 163 s exit 0, `sigtool -i main.cvd` → `Verification OK.` (version 63, 3,287,027 signatures), `vcd scan` loads that database and completes the clamav engine, deleting `database.verified` and installing again takes **11 s** and restores the marker without downloading. `fmt`, `clippy -D warnings`, **126 tests** (2 ignored).
+
 
 
 
