@@ -25,8 +25,10 @@ $state = [ordered]@{
     finished         = $false
     duration_seconds = $duration
     sample           = $null
+    sample_pid       = $null
     sample_exit_ms   = $null
     sample_exit_code = $null
+    defender_disabled = $false
     processes        = @()
     connections      = @()
     dns              = @()
@@ -92,10 +94,20 @@ foreach ($process in Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
     $initialPids[$process.ProcessId] = $true
 }
 
+# The initial state is written before anything that can block, so a Defender
+# provider that stalls still leaves an identifiable run behind.
+Save-State | Out-Null
+
 # The guest is disposable and never touches the host: stop its real-time
-# protection so a sample is not killed before it can act. Best effort; if the
-# policy forbids it, the run continues and the caveat still applies.
-Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+# protection so a sample is not killed before it can act. Reported as a fact
+# only when the setting actually took effect.
+try {
+    Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+    $defender = Get-MpComputerStatus -ErrorAction Stop
+    $state.defender_disabled = -not $defender.RealTimeProtectionEnabled
+} catch {
+    $state.defender_disabled = $false
+}
 
 $beforeFiles = Snapshot-Files
 $beforeRegistry = Snapshot-Registry
@@ -147,6 +159,7 @@ try {
 # The sample is always in its own report, even when it exits before the first
 # poll: "nothing observed" must not mean "nothing was started".
 if ($null -ne $sampleProcess) {
+    $state.sample_pid = $sampleProcess.Id
     $state.processes += [ordered]@{
         pid     = $sampleProcess.Id
         parent  = $PID

@@ -331,6 +331,13 @@ impl Strings {
         )
     }
 
+    pub fn sandboxie_install_hint(&self) -> &'static str {
+        self.pick(
+            "Windows asks for administrator for PowerShell; the app then downloads the installer, checks its pinned SHA-256 and runs it silently.",
+            "Windows pide administrador para PowerShell; después la app descarga el instalador, comprueba su SHA-256 fijado y lo ejecuta en silencio.",
+        )
+    }
+
     pub fn installing_sandboxie(&self) -> &'static str {
         self.pick(
             "installing Sandboxie-Plus (about 25 MB)…",
@@ -406,6 +413,8 @@ mod tests {
         assert_eq!(en.install_sandboxie(), "Install Sandboxie-Plus…");
         assert_eq!(es.install_sandboxie(), "Instalar Sandboxie-Plus…");
         assert_ne!(en.installing_sandboxie(), es.installing_sandboxie());
+        assert!(en.sandboxie_install_hint().contains("administrator"));
+        assert!(es.sandboxie_install_hint().contains("administrador"));
     }
 
     #[test]

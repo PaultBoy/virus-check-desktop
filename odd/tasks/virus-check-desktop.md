@@ -191,6 +191,25 @@ Verified with a one-off probe and then the real app, both inside Windows Sandbox
 
 Also measured along the way: Windows Sandbox with `<VGpu>Enable</VGpu>` still gave WARP rather than the host GPU, so the software path is the one that matters there; and the earlier `.wsb` probe failure was a wedged sandbox left by killing sessions, not the binaries.
 
+L40. Manual review of `7d689da..HEAD` (five commits, 14 files) with risk, resilience and reliability lenses plus a refuter. The native RDD pass could not run: `gentle-ai review status` returned `immutable_review_transport_unsupported` with `cause: OpenCode 2.4.1 does not return completed foreground reviewer Tasks for immutable receipt review`, so no authority was created and the manual path was used.
+
+Confirmed and fixed:
+
+1. **The Start.exe lifetime bug was only fixed for executables.** For `.bat/.cmd/.ps1/.vbs/.js/.wsf`, `Start.exe` carries the sample path in its command line, is created first, and won the one-shot `$interpreterPid`; a `.bat` that slept 12 s reported `exited after 1017 ms` and the false "it exited before acting" caveat. Fixed by excluding `Start.exe` from both the interpreter match and `executed`, polling until the real interpreter appears, also accepting a late start from the observation loop, deferring the "did not start" error to the end, and recording `sample_pid` in the report. Re-verified on the same sample: **14,106 ms**.
+2. **The installer reported success with `SbieSvc` stopped.** `$installed` came from the service object existing; now the service must be `Running` after a bounded `Start-Service`, exit 6 means "installed, reboot required" and exit 7 "timed out" (the elevated wait is bounded at 1900 s against the 1800 s download). `detect_support` now requires the service too, so the UI stops offering a dead backend.
+3. **A silent exit when both renderers failed.** The app now shows a `MessageBoxW` naming each renderer's error, and only retries with OpenGL when `App::new` never ran, so a mid-session failure cannot start a second worker and a second Sandboxie box.
+4. **Wrong status text for `0xC0000142`** (`STATUS_DLL_INIT_FAILED`, not an invalid image); `0xC000012F` added for the latter.
+5. **"Did nothing" is now derived from the sample's lineage**, not from a process count that means different things per backend.
+6. **The scope filter compares literally** (`.Contains`, with `Start.exe` excluded as a root), so `a[1].bat` no longer loses its whole tree and connections.
+7. **Concurrency**: a named mutex serialises detonations per session, and the VM error path no longer sweeps sessions it cannot prove are its own.
+8. **Defender**: the initial state is written before `Set-MpPreference`, the flag is verified with `Get-MpComputerStatus`, and the caveat appears only when protection really was off.
+9. **The PowerShell fallback is bounded** (`-TimeoutSec 1800`, progress off) and keeps the curl failure in the message.
+10. **An unsupported type no longer sets both `unsupported` and `error`**, which made the Sandboxie CLI exit 2 where Windows Sandbox exits 0.
+11. **`dropped` is capped** at 256 entries.
+12. **The dialog states what the UAC prompt is for**: PowerShell, then a pinned-digest check and a silent install.
+
+Verified: `fmt`, `clippy -D warnings`, **121 tests** (2 ignored), release build, the Sandboxie 12 s `.bat` at 14,106 ms, and the GUI rendering. Not verified: the 3010/reboot install path (needs an elevated install and a reboot).
+
 
 
 

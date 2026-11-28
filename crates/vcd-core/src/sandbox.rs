@@ -120,6 +120,13 @@ pub(crate) struct SandboxReport {
     pub(crate) sample_exit_ms: Option<u64>,
     #[serde(default)]
     pub(crate) sample_exit_code: Option<i64>,
+    /// The process the run is about: the sample, or the interpreter that runs a
+    /// script. Everything else in `processes` is context.
+    #[serde(default)]
+    pub(crate) sample_pid: Option<u32>,
+    /// True only when the guest confirmed that real-time protection is off.
+    #[serde(default)]
+    pub(crate) defender_disabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +162,11 @@ pub fn detonate_with(
     options: &DetonateOptions,
     backend: Backend,
 ) -> Result<Detonation, SandboxError> {
+    // One detonation at a time per session: two runs would share the Sandboxie
+    // box, and the VM teardown cannot tell whose session it is looking at.
+    let _lock = DetonationLock::acquire()
+        .ok_or_else(|| SandboxError::Launch("another detonation is already running".to_string()))?;
+
     match backend {
         Backend::WindowsSandbox => detonate_windows(sample, options),
         Backend::Sandboxie => {
@@ -209,9 +221,9 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
     let session = match wait_for_session(&known_sessions) {
         Ok(session) => session,
         Err(error) => {
-            // Nothing matched, but the launch was ours: stop whatever appeared
-            // rather than leave a VM running a sample nobody is watching.
-            stop_new_sessions(&known_sessions);
+            // The launch was ours, but a session that appears now may belong to
+            // someone else. The guest stops itself after its duration, so it is
+            // left alone instead of killing another window.
             return Err(error);
         }
     };
@@ -255,10 +267,12 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
     caveats.push(
         "telemetry is written from inside the sandbox; a sample that targets the harness can tamper with it".to_string(),
     );
-    caveats.push(
-        "real-time protection inside the disposable sandbox is disabled for the run, so the sample can act"
-            .to_string(),
-    );
+    if report.defender_disabled == Some(true) {
+        caveats.push(
+            "real-time protection inside the disposable sandbox was disabled for the run, so the sample can act"
+                .to_string(),
+        );
+    }
     caveats.push("no observed behaviour is not proof of benign behaviour".to_string());
     if timed_out {
         caveats.push(format!(
@@ -268,7 +282,7 @@ fn detonate_windows(sample: &Path, options: &DetonateOptions) -> Result<Detonati
     }
     if let Some(exit_ms) = report.sample_exit_ms {
         caveats.push(describe_exit(exit_ms, report.sample_exit_code));
-        if exit_ms < 2_000 && report.processes.len() <= 1 && report.files_created.is_empty() {
+        if exited_before_acting(&report) {
             caveats.push(
                 "it exited before acting: the guest's real-time protection can block a sample, and nothing observed is not proof of benign behaviour"
                     .to_string(),
@@ -387,6 +401,50 @@ pub(crate) fn read_report(path: &Path) -> Option<SandboxReport> {
     Some(report)
 }
 
+/// The sample and everything that descends from it, by parent link. Guest noise
+/// (RuntimeBroker, smartscreen, the shell) is not part of it.
+pub(crate) fn sample_tree(report: &SandboxReport) -> std::collections::HashSet<u32> {
+    let mut ids = std::collections::HashSet::new();
+    if let Some(root) = report.sample_pid {
+        ids.insert(root);
+    }
+
+    loop {
+        let before = ids.len();
+        for process in &report.processes {
+            if ids.contains(&process.parent) {
+                ids.insert(process.pid);
+            }
+        }
+        if ids.len() == before {
+            break;
+        }
+    }
+
+    ids
+}
+
+/// A sample that died immediately and left nothing behind is more likely to have
+/// been blocked than to have done nothing. A process count is not a portable
+/// test: one backend records every guest process, the other only the sample tree.
+pub(crate) fn exited_before_acting(report: &SandboxReport) -> bool {
+    if !report.sample_exit_ms.is_some_and(|exit_ms| exit_ms < 2_000) {
+        return false;
+    }
+
+    let tree = sample_tree(report);
+    let descendants = tree
+        .iter()
+        .filter(|pid| Some(**pid) != report.sample_pid)
+        .count();
+
+    descendants == 0
+        && report.files_created.is_empty()
+        && !report
+            .connections
+            .iter()
+            .any(|connection| tree.contains(&connection.pid))
+}
 /// Windows status values a sample most often dies with before it can act. The
 /// number alone says nothing to a person; the reason is the useful part.
 fn exit_code_hint(code: i64) -> Option<&'static str> {
@@ -395,7 +453,8 @@ fn exit_code_hint(code: i64) -> Option<&'static str> {
         0xC000_0139 => "an entry point it needs is missing",
         0xC000_007B => "the image is for another architecture or is corrupted",
         0xC000_0005 => "it crashed with an access violation",
-        0xC000_0142 => "the image is not a valid Windows application",
+        0xC000_0142 => "a DLL it needs could not initialize",
+        0xC000_012F => "the image is not a valid Windows application",
         _ => return None,
     })
 }
@@ -414,13 +473,15 @@ pub(crate) fn describe_exit(exit_ms: u64, code: Option<i64>) -> String {
 }
 
 fn dropped_files(directory: &Path) -> Vec<PathBuf> {
-    fs::read_dir(directory)
-        .map(|entries| {
-            let mut files: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-            files.sort();
-            files
-        })
-        .unwrap_or_default()
+    // The guest can write this folder directly, so the listing is capped.
+    const MAX_DROPPED_LISTED: usize = 256;
+
+    let mut files: Vec<PathBuf> = fs::read_dir(directory)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    files.sort();
+    files.truncate(MAX_DROPPED_LISTED);
+    files
 }
 
 fn wait_for_session(known: &[(String, u32)]) -> Result<u32, SandboxError> {
@@ -450,6 +511,62 @@ struct SessionGuard {
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         stop_session(&self.session, &self.known);
+    }
+}
+
+/// One detonation at a time per session. Two runs would share the Sandboxie box
+/// and the VM teardown cannot tell whose session it is looking at. A named
+/// mutex is released by the kernel when the process dies, so a crash cannot
+/// leave a stale lock behind.
+struct DetonationLock {
+    handle: *mut std::ffi::c_void,
+}
+
+impl DetonationLock {
+    fn acquire() -> Option<Self> {
+        use std::os::windows::ffi::OsStrExt;
+
+        unsafe extern "system" {
+            fn CreateMutexW(
+                attributes: *mut std::ffi::c_void,
+                owner: i32,
+                name: *const u16,
+            ) -> *mut std::ffi::c_void;
+            fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+
+        let name: Vec<u16> = std::ffi::OsStr::new(r"Local\VirusCheckDesktop.Detonation")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = unsafe { CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return None;
+        }
+
+        // WAIT_OBJECT_0 = acquired; anything else means someone holds it.
+        if unsafe { WaitForSingleObject(handle, 0) } == 0 {
+            Some(Self { handle })
+        } else {
+            unsafe { CloseHandle(handle) };
+            None
+        }
+    }
+}
+
+impl Drop for DetonationLock {
+    fn drop(&mut self) {
+        unsafe extern "system" {
+            fn ReleaseMutex(handle: *mut std::ffi::c_void) -> i32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+
+        unsafe {
+            ReleaseMutex(self.handle);
+            CloseHandle(self.handle);
+        }
     }
 }
 
@@ -563,6 +680,91 @@ mod tests {
         let text = describe_exit(59, Some(-1_073_741_515));
         assert!(text.contains("exited after 59 ms"));
         assert!(text.contains("DLL"), "{text}");
+    }
+
+    #[test]
+    fn every_documented_status_is_explained() {
+        for (code, needle) in [
+            (-1_073_741_515i64, "DLL it needs is not present"),
+            (-1_073_741_511, "entry point it needs is missing"),
+            (-1_073_741_701, "another architecture"),
+            (-1_073_741_819, "access violation"),
+            (-1_073_741_502, "could not initialize"),
+            (-1_073_741_521, "not a valid Windows application"),
+        ] {
+            let text = describe_exit(1, Some(code));
+            assert!(text.contains(needle), "{code:#x}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_exit_without_a_code_reports_only_the_time() {
+        assert_eq!(
+            describe_exit(12_000, None),
+            "the sample process exited after 12000 ms"
+        );
+    }
+
+    fn sample_report(exit_ms: Option<u64>) -> SandboxReport {
+        SandboxReport {
+            sample_pid: Some(10),
+            sample_exit_ms: exit_ms,
+            processes: vec![
+                SandboxProcess {
+                    pid: 10,
+                    parent: 1,
+                    name: Some("sample.exe".to_string()),
+                    path: None,
+                    command: None,
+                },
+                SandboxProcess {
+                    pid: 11,
+                    parent: 10,
+                    name: None,
+                    path: None,
+                    command: None,
+                },
+                SandboxProcess {
+                    pid: 20,
+                    parent: 5,
+                    name: None,
+                    path: None,
+                    command: None,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_sample_tree_follows_parent_links_only() {
+        let tree = sample_tree(&sample_report(Some(10)));
+        assert!(tree.contains(&10));
+        assert!(tree.contains(&11));
+        assert!(!tree.contains(&20), "guest noise is not part of the sample");
+    }
+
+    #[test]
+    fn an_immediate_exit_without_descendants_is_flagged() {
+        let mut report = sample_report(Some(59));
+        report.processes.truncate(1);
+        assert!(exited_before_acting(&report));
+
+        report.files_created.push("a file".to_string());
+        assert!(!exited_before_acting(&report), "a file proves it acted");
+    }
+
+    #[test]
+    fn a_late_exit_is_not_flagged() {
+        assert!(!exited_before_acting(&sample_report(Some(20_000))));
+        assert!(!exited_before_acting(&sample_report(None)));
+    }
+
+    #[test]
+    fn the_guest_writes_state_before_the_defender_call() {
+        let save = RUN_SCRIPT.find("Save-State").expect("state write");
+        let defender = RUN_SCRIPT.find("Set-MpPreference").expect("defender call");
+        assert!(save < defender);
     }
 
     fn report_path(tag: &str) -> PathBuf {

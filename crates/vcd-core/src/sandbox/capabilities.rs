@@ -113,7 +113,7 @@ pub fn detect_support() -> SandboxSupport {
     SandboxSupport {
         edition: edition(),
         windows_sandbox: windows_sandbox_present(),
-        sandboxie: super::sandboxie::discover().is_some(),
+        sandboxie: super::sandboxie::discover().is_some() && super::sandboxie::service_running(),
     }
 }
 

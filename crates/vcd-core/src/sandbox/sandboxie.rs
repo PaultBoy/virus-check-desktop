@@ -50,6 +50,19 @@ pub(crate) fn discover() -> Option<Sandboxie> {
     })
 }
 
+/// Sandboxie without its service cannot sandbox anything: the driver is the
+/// sandbox. The files alone are not an installation.
+pub(crate) fn service_running() -> bool {
+    let output = crate::download::hidden_command(crate::download::system32("sc.exe"))
+        .args(["query", "SbieSvc"])
+        .output();
+
+    match output {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).contains("RUNNING"),
+        Err(_) => false,
+    }
+}
+
 pub(crate) fn detonate(
     sample: &Path,
     options: &DetonateOptions,
@@ -154,7 +167,7 @@ pub(crate) fn detonate(
     }
     if let Some(exit_ms) = report.sample_exit_ms {
         caveats.push(super::describe_exit(exit_ms, report.sample_exit_code));
-        if exit_ms < 2_000 && report.processes.len() <= 1 && report.files_created.is_empty() {
+        if super::exited_before_acting(&report) {
             caveats.push(
                 "it exited before acting: the host's real-time protection can block a sample, and nothing observed is not proof of benign behaviour"
                     .to_string(),
@@ -215,4 +228,29 @@ fn dropped_files(directory: &Path) -> Vec<PathBuf> {
             files
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_watch_script_never_takes_start_exe_for_the_sample() {
+        assert!(WATCH_SCRIPT.contains("$process.ExecutablePath -eq $StartExe"));
+        assert!(
+            !WATCH_SCRIPT.contains("$samplePid = $interpreterPid"),
+            "the launcher must never become the lifetime proxy"
+        );
+    }
+
+    #[test]
+    fn the_scope_filter_compares_literally() {
+        assert!(!WATCH_SCRIPT.contains("-like \"*$sampleName*\""));
+        assert!(WATCH_SCRIPT.contains("$process.command.Contains($Sample)"));
+    }
+
+    #[test]
+    fn an_unsupported_type_is_not_an_error() {
+        assert!(WATCH_SCRIPT.contains("-not $state.unsupported"));
+    }
 }

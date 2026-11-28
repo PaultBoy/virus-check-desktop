@@ -10,6 +10,7 @@ mod i18n;
 mod worker;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
@@ -21,13 +22,32 @@ use vcd_core::{
 
 use worker::{Command, Event, Worker};
 
+static APP_STARTED: AtomicBool = AtomicBool::new(false);
+
 fn main() -> eframe::Result {
-    // A VM without OpenGL 3.3 (Windows Sandbox, a plain Hyper-V guest) can still
-    // present through Direct3D 12; glow is the fallback for machines where wgpu
-    // cannot start.
-    match run(eframe::Renderer::Wgpu) {
+    let wgpu_error = match run(eframe::Renderer::Wgpu) {
+        Ok(()) => return Ok(()),
+        Err(error) => error.to_string(),
+    };
+
+    // A window that already ran means `App::new` was built, and with it a worker
+    // thread. Retrying with the other renderer would start a second worker (and a
+    // second Sandboxie box) while the first one may still be running.
+    if APP_STARTED.load(Ordering::SeqCst) {
+        show_startup_error(&format!(
+            "Direct3D 12 failed after the window opened:\n{wgpu_error}"
+        ));
+        return Ok(());
+    }
+
+    match run(eframe::Renderer::Glow) {
         Ok(()) => Ok(()),
-        Err(_) => run(eframe::Renderer::Glow),
+        Err(error) => {
+            show_startup_error(&format!(
+                "No renderer could start.\n\nDirect3D 12: {wgpu_error}\nOpenGL: {error}"
+            ));
+            Ok(())
+        }
     }
 }
 
@@ -44,8 +64,45 @@ fn run(renderer: eframe::Renderer) -> eframe::Result {
     eframe::run_native(
         "Virus Check Desktop",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(|cc| {
+            APP_STARTED.store(true, Ordering::SeqCst);
+            Ok(Box::new(App::new(cc)))
+        }),
     )
+}
+
+/// A GUI process has no console: without this, a renderer failure looks like the
+/// app doing nothing at all.
+fn show_startup_error(message: &str) {
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn MessageBoxW(
+            window: *mut std::ffi::c_void,
+            text: *const u16,
+            caption: *const u16,
+            kind: u32,
+        ) -> i32;
+    }
+
+    let text: Vec<u16> = std::ffi::OsStr::new(message)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let caption: Vec<u16> = std::ffi::OsStr::new("Virus Check Desktop")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // MB_OK | MB_ICONERROR
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x0000_0010,
+        );
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -386,6 +443,7 @@ impl App {
                     if ui.button(self.strings.install_sandboxie()).clicked() {
                         install = true;
                     }
+                    ui.label(RichText::new(self.strings.sandboxie_install_hint()).weak());
                 } else {
                     for backend in backends {
                         let label = if Some(backend) == recommended {

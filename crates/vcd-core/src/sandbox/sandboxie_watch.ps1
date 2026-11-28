@@ -21,6 +21,7 @@ $state = [ordered]@{
     finished_at      = $null
     duration_seconds = $Seconds
     sample           = (Split-Path $Sample -Leaf)
+    sample_pid       = $null
     sample_exit_ms   = $null
     sample_exit_code = $null
     processes        = @()
@@ -81,36 +82,33 @@ if ($null -ne $launcher) {
     }
 }
 
-# `executed` means the sample really started inside the box, not that Start.exe
-# was spawned. It cannot be an image match: `.bat`, `.ps1` and `.vbs` run through
-# an interpreter, so the sample appears in the command line instead.
-$launchDeadline = (Get-Date).AddSeconds(5)
+# Start.exe carries the sample path in its own command line and exits about a
+# second after launching, so it is never evidence that the sample ran and never
+# the process whose lifetime is reported. An executable is found by its image; a
+# script by the interpreter it was handed to.
+$launchDeadline = (Get-Date).AddSeconds(10)
 $expectsImage = $extension -match '^\.(exe|com|scr|pif|cpl)$'
 $interpreterPid = $null
-while ((($expectsImage -and $null -eq $samplePid) -or (-not $state.executed)) -and
-       (Get-Date) -lt $launchDeadline) {
+while ((Get-Date) -lt $launchDeadline) {
+    if ((-not $expectsImage -and $null -ne $interpreterPid) -or ($expectsImage -and $null -ne $samplePid)) {
+        break
+    }
+
     foreach ($process in Get-CimInstance Win32_Process) {
         if ($beforePids.ContainsKey([int]$process.ProcessId)) { continue }
+        if ($process.ExecutablePath -eq $StartExe) { continue }
         if ($process.ExecutablePath -eq $Sample) {
-            # The sample itself: this is the process whose lifetime is reported.
             $samplePid = [int]$process.ProcessId
             $state.executed = $true
         } elseif ($process.CommandLine -and $process.CommandLine.Contains($Sample)) {
-            # The interpreter that starts it. Start.exe carries the sample path in
-            # its own command line and exits in about a second, so it is never
-            # taken for the sample; for scripts the interpreter is the closest
-            # thing to the sample's lifetime.
             if ($null -eq $interpreterPid) { $interpreterPid = [int]$process.ProcessId }
             $state.executed = $true
         }
     }
-    if (-not $state.executed -or ($expectsImage -and $null -eq $samplePid)) {
+
+    if ((-not $expectsImage -and $null -eq $interpreterPid) -or ($expectsImage -and $null -eq $samplePid)) {
         Start-Sleep -Milliseconds 200
     }
-}
-if ($null -eq $samplePid -and $extension -notmatch '^\.msi$') { $samplePid = $interpreterPid }
-if (-not $state.executed -and -not $state.error) {
-    $state.error = 'the sample did not start inside the box'
 }
 
 $seen = @{}
@@ -127,9 +125,14 @@ function Save-State([bool]$final) {
 }
 
 while ((Get-Date) -lt $deadline) {
-    if ($null -ne $samplePid -and $null -eq $state.sample_exit_ms -and
-        $null -eq (Get-Process -Id $samplePid -ErrorAction SilentlyContinue)) {
+    # `.msi` runs through msiexec, which returns before the install finishes, so
+    # its exit says nothing about the sample and is not reported.
+    $trackedPid = $samplePid
+    if ($null -eq $trackedPid -and $extension -notmatch '^\.msi$') { $trackedPid = $interpreterPid }
+    if ($null -ne $trackedPid -and $null -eq $state.sample_exit_ms -and
+        $null -eq (Get-Process -Id $trackedPid -ErrorAction SilentlyContinue)) {
         $state.sample_exit_ms = [int]((Get-Date) - $sampleStarted).TotalMilliseconds
+        $state.sample_pid = $trackedPid
     }
 
     foreach ($process in Get-CimInstance Win32_Process) {
@@ -143,6 +146,16 @@ while ((Get-Date) -lt $deadline) {
             name    = $process.Name
             path    = $process.ExecutablePath
             command = $process.CommandLine
+        }
+
+        # A sample that starts after the launch window still counts.
+        if ($process.ExecutablePath -eq $StartExe) { continue }
+        if ($process.ExecutablePath -eq $Sample) {
+            if ($null -eq $samplePid) { $samplePid = $processId }
+            $state.executed = $true
+        } elseif ($process.CommandLine -and $process.CommandLine.Contains($Sample)) {
+            if ($null -eq $interpreterPid) { $interpreterPid = $processId }
+            $state.executed = $true
         }
     }
 
@@ -166,15 +179,32 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 250
 }
 
+# Decided once, at the end, so a late start is not reported as a failure.
+if (-not $state.executed -and -not $state.unsupported -and -not $state.error) {
+    $state.error = 'the sample did not start inside the box'
+}
+if ($null -ne $samplePid) {
+    $state.sample_pid = $samplePid
+} elseif ($null -ne $interpreterPid -and $extension -notmatch '^\.msi$') {
+    $state.sample_pid = $interpreterPid
+}
+
 & $StartExe "/box:$Box" /terminate | Out-Null
 Start-Sleep -Seconds 2
 
 # Tie the report to the sample: keep its process and descendants, drop the rest.
-$sampleName = Split-Path $Sample -Leaf
+# Literal comparisons: `-like` reads `[1]` as a character class and would drop a
+# sample named `a[1].bat` together with everything it did.
 $inScope = @{}
 foreach ($process in $state.processes) {
-    if (($process.command -and $process.command -like "*$sampleName*") -or ($process.path -eq $Sample)) {
-        $inScope[[int]$process.pid] = $true
+    if ($process.path -eq $Sample) { $inScope[[int]$process.pid] = $true }
+}
+if ($inScope.Count -eq 0) {
+    foreach ($process in $state.processes) {
+        if ($process.path -ne $StartExe -and $process.command -and $process.command.Contains($Sample)) {
+            $inScope[[int]$process.pid] = $true
+            break
+        }
     }
 }
 
@@ -191,7 +221,7 @@ while ($changed) {
     }
 }
 
-$state.processes = @($state.processes | Where-Object { $inScope.ContainsKey([int]$_.pid) -and $_.name -ne 'Start.exe' })
+$state.processes = @($state.processes | Where-Object { $inScope.ContainsKey([int]$_.pid) -and $_.path -ne $StartExe })
 $state.connections = @($state.connections | Where-Object { $inScope.ContainsKey([int]$_.pid) })
 
 $afterFiles = @{}

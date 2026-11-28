@@ -56,38 +56,48 @@ $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvarian
 if ($hash -ne '__DIGEST__') { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; exit 2 }
 $exe = Join-Path $env:ProgramFiles 'Sandboxie-Plus\Start.exe'
 $installed = $false
+$reboot = $false
 # The driver registration can fail on the first run on a machine that never had
 # it, and succeeds on a second pass; do that pass here instead of asking the user.
 for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
     & $path /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
     $code = $LASTEXITCODE
+    if ($code -eq 3010 -or $code -eq 1641) { $reboot = $true }
     if ($code -ne 0 -and $code -ne 3010 -and $code -ne 1641) { continue }
+    # A service object is not a running service: the backend is only usable when
+    # SbieSvc answers, which a pending reboot prevents.
     for ($wait = 0; $wait -lt 20 -and -not $installed; $wait++) {
+        Start-Sleep -Seconds 2
         $svc = Get-Service -Name SbieSvc -ErrorAction SilentlyContinue
         if ((Test-Path -LiteralPath $exe) -and ($null -ne $svc)) {
-            if ($svc.Status -ne 'Running') { Start-Service -Name SbieSvc -ErrorAction SilentlyContinue }
-            $installed = $true
-        } else {
-            Start-Sleep -Seconds 2
+            if ($svc.Status -ne 'Running') {
+                Start-Service -Name SbieSvc -ErrorAction SilentlyContinue
+                $svc = Get-Service -Name SbieSvc -ErrorAction SilentlyContinue
+            }
+            if (($null -ne $svc) -and ($svc.Status -eq 'Running')) { $installed = $true }
         }
     }
 }
 Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-if (-not $installed) { exit 5 }
-exit 0
+if ($installed) { exit 0 }
+if ($reboot) { exit 6 }
+exit 5
 "#;
 
 /// Starts the elevated script and maps its exit code back to a reason. Both the
 /// outer `Start-Process` and the PowerShell inside it are hidden: a console
-/// window would be the first thing the user sees.
+/// window would be the first thing the user sees. The wait is bounded (the
+/// download alone may legitimately take 1800 s).
 const LAUNCH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
      try {\n\
-     $p = Start-Process -FilePath $env:VCD_ELEVATED_POWERSHELL -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-EncodedCommand',$env:VCD_ELEVATED_ENCODED) -Verb RunAs -WindowStyle Hidden -Wait -PassThru\n\
-     exit $p.ExitCode\n\
+     $p = Start-Process -FilePath $env:VCD_ELEVATED_POWERSHELL -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-EncodedCommand',$env:VCD_ELEVATED_ENCODED) -Verb RunAs -WindowStyle Hidden -PassThru\n\
+     if ($p.WaitForExit(1900000)) { exit $p.ExitCode }\n\
+     $p.Kill()\n\
+     exit 7\n\
      } catch { exit 1 }";
 
-/// Download, verify and start the official installer, elevated. Returns once
-/// the installer process exists; the user finishes its wizard.
+/// Download, verify and start the official installer, elevated. Returns after the
+/// silent install finishes, not when the installer process starts.
 pub fn install() -> Result<(), String> {
     let script = ELEVATED_SCRIPT
         .replace("__URL__", &installer_url())
@@ -114,9 +124,14 @@ pub fn install() -> Result<(), String> {
                 .to_string(),
         ),
         Some(5) => Err(
-            "the installer finished but Sandboxie-Plus is not under Program Files; check its log"
+            "the installer finished but its service is not running; try again, and if it repeats check the Windows event log"
                 .to_string(),
         ),
+        Some(6) => Err(
+            "Sandboxie-Plus is installed but needs a reboot before its service can run; reboot and try again"
+                .to_string(),
+        ),
+        Some(7) => Err("the installer did not finish in time; nothing more was run".to_string()),
         _ => Err(format!("the installer did not start (exit code {status})")),
     }
 }
@@ -195,6 +210,18 @@ mod tests {
     fn both_the_outer_and_the_inner_window_are_hidden() {
         assert!(LAUNCH_SCRIPT.contains("-WindowStyle Hidden"));
         assert!(LAUNCH_SCRIPT.contains("'-WindowStyle','Hidden'"));
+    }
+
+    #[test]
+    fn a_service_that_does_not_run_is_not_success() {
+        assert!(ELEVATED_SCRIPT.contains("$svc.Status -eq 'Running'"));
+        assert!(ELEVATED_SCRIPT.contains("exit 6"));
+    }
+
+    #[test]
+    fn the_elevated_wait_is_bounded() {
+        assert!(LAUNCH_SCRIPT.contains("WaitForExit(1900000)"));
+        assert!(LAUNCH_SCRIPT.contains("exit 7"));
     }
 
     #[test]

@@ -19,9 +19,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// A fixed script that reads its inputs from the environment, so neither the URL
-/// nor the destination ever becomes part of the PowerShell source.
-const POWERSHELL_DOWNLOAD: &str = "Invoke-WebRequest -Uri $env:VCD_DOWNLOAD_URL \
-     -OutFile $env:VCD_DOWNLOAD_TARGET -UseBasicParsing";
+/// nor the destination ever becomes part of the PowerShell source. The progress
+/// bar is off (it makes `Invoke-WebRequest` an order of magnitude slower on a
+/// large file) and the whole request is bounded like the curl it replaces.
+const POWERSHELL_DOWNLOAD: &str = "$ProgressPreference = 'SilentlyContinue'; \
+     Invoke-WebRequest -Uri $env:VCD_DOWNLOAD_URL -OutFile $env:VCD_DOWNLOAD_TARGET \
+     -UseBasicParsing -TimeoutSec 1800";
 
 /// A console program with no window of its own.
 pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -107,8 +110,18 @@ pub(crate) fn fetch(url: &str, destination: &Path) -> Result<(), String> {
         .args(["-NoProfile", "-Command", POWERSHELL_DOWNLOAD])
         .env("VCD_DOWNLOAD_URL", url)
         .env("VCD_DOWNLOAD_TARGET", destination)
-        .status()
-        .map_err(|error| format!("cannot run powershell: {error}"))?;
+        .status();
+
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = fs::remove_file(destination);
+            return Err(match failure {
+                Some(first) => format!("cannot run powershell: {error} (curl first: {first})"),
+                None => format!("cannot run powershell: {error}"),
+            });
+        }
+    };
 
     if status.success() {
         return Ok(());
@@ -229,6 +242,12 @@ mod tests {
         assert!(!digest.chars().any(|digit| digit.is_ascii_uppercase()));
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_powershell_fallback_is_bounded() {
+        assert!(POWERSHELL_DOWNLOAD.contains("-TimeoutSec 1800"));
+        assert!(POWERSHELL_DOWNLOAD.contains("$ProgressPreference"));
     }
 
     #[test]
